@@ -1194,6 +1194,15 @@ private fun TodayStrengthPage(
                         "${execution.analytics.trainingDays30} dias · ${execution.analytics.sets30} séries · " +
                             "%.0f kg de volume".format(Locale.US, execution.analytics.tonnage30)
                     )
+                    execution.analytics.adherence30Pct?.let {
+                        Text("Aderência MSB: %.0f%%".format(Locale.US, it))
+                    }
+                    execution.analytics.avgRpeDelta30?.let {
+                        Text(
+                            "RPE real vs alvo: %+.2f".format(Locale.US, it),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     if (execution.analytics.pendingSyncSets > 0) {
                         Text(
                             "${execution.analytics.pendingSyncSets} séries locais pendentes de sincronização MSB",
