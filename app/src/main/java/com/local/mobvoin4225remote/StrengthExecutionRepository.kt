@@ -1,0 +1,566 @@
+package com.local.mobvoin4225remote
+
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.time.LocalDate
+import java.util.Locale
+import kotlin.math.max
+
+data class WorkoutSetPlan(
+    val key: String,
+    val sourceExerciseId: String,
+    val groupIndex: Int,
+    val setIndex: Int,
+    val prescribedLoad: Double?,
+    val prescribedReps: Int?,
+    val prescribedRpe: Double?,
+    val actualLoad: Double?,
+    val actualReps: Int?,
+    val actualRpe: Double?,
+    val completed: Boolean,
+    val comment: String?,
+    val videoUri: String?,
+)
+
+data class WorkoutExercisePlan(
+    val sourceId: String,
+    val name: String,
+    val notes: String?,
+    val instructions: String?,
+    val restSeconds: Int,
+    val mappedFitNotesName: String?,
+    val mappingConfidence: Double?,
+    val sets: List<WorkoutSetPlan>,
+)
+
+data class WorkoutDayPlan(
+    val date: String,
+    val exercises: List<WorkoutExercisePlan>,
+) {
+    val totalSets: Int get() = exercises.sumOf { it.sets.size }
+    val completedSets: Int get() = exercises.sumOf { ex -> ex.sets.count { it.completed } }
+    val complete: Boolean get() = totalSets > 0 && completedSets == totalSets
+}
+
+data class MappingCandidate(
+    val msbName: String,
+    val fitNotesName: String?,
+    val confidence: Double,
+    val autoMapped: Boolean,
+)
+
+data class StrengthExecutionState(
+    val selectedDate: String = LocalDate.now().toString(),
+    val workout: WorkoutDayPlan? = null,
+    val autoMappedCount: Int = 0,
+    val reviewMappings: List<MappingCandidate> = emptyList(),
+    val lastMessage: String? = null,
+    val busy: Boolean = false,
+)
+
+class StrengthExecutionRepository(context: Context) {
+    private val appContext = context.applicationContext
+    private val db = ExecutionDb(appContext)
+    private val importedDbFile: File get() = appContext.getDatabasePath("training_hub.db")
+
+    val state = MutableStateFlow(StrengthExecutionState())
+
+    init {
+        runCatching { refreshSync(LocalDate.now().toString()) }
+    }
+
+    suspend fun refresh(date: String = state.value.selectedDate) = withContext(Dispatchers.IO) {
+        refreshSync(date)
+    }
+
+    suspend fun previousDay() = withContext(Dispatchers.IO) {
+        val date = LocalDate.parse(state.value.selectedDate).minusDays(1).toString()
+        refreshSync(date)
+    }
+
+    suspend fun nextDay() = withContext(Dispatchers.IO) {
+        val date = LocalDate.parse(state.value.selectedDate).plusDays(1).toString()
+        refreshSync(date)
+    }
+
+    suspend fun goToday() = withContext(Dispatchers.IO) {
+        refreshSync(LocalDate.now().toString())
+    }
+
+    suspend fun completeSet(
+        set: WorkoutSetPlan,
+        weight: Double?,
+        reps: Int?,
+        rpe: Double?,
+        comment: String?,
+    ): Int = withContext(Dispatchers.IO) {
+        val rest = restSecondsForExercise(set.sourceExerciseId)
+        val existing = loadLocalSet(set.key)
+        val values = ContentValues().apply {
+            put("set_key", set.key)
+            put("source_exercise_id", set.sourceExerciseId)
+            put("group_index", set.groupIndex)
+            put("set_index", set.setIndex)
+            putNullable("weight", weight)
+            putNullable("reps", reps)
+            putNullable("rpe", rpe)
+            putNullable("comment", comment?.takeIf { it.isNotBlank() })
+            putNullable("video_uri", existing?.videoUri)
+            put("completed_at", System.currentTimeMillis())
+            put("sync_state", "pending")
+        }
+        db.writableDatabase.insertWithOnConflict(
+            "local_set",
+            null,
+            values,
+            SQLiteDatabase.CONFLICT_REPLACE,
+        )
+        refreshSync(state.value.selectedDate, "Série gravada · descanso ${formatSeconds(rest)}")
+        rest
+    }
+
+    suspend fun undoSet(setKey: String) = withContext(Dispatchers.IO) {
+        db.writableDatabase.delete("local_set", "set_key=?", arrayOf(setKey))
+        refreshSync(state.value.selectedDate, "Série anulada")
+    }
+
+    suspend fun attachVideo(set: WorkoutSetPlan, uri: String) = withContext(Dispatchers.IO) {
+        val current = loadLocalSet(set.key)
+        val values = ContentValues().apply {
+            put("set_key", set.key)
+            put("source_exercise_id", set.sourceExerciseId)
+            put("group_index", set.groupIndex)
+            put("set_index", set.setIndex)
+            putNullable("weight", current?.weight)
+            putNullable("reps", current?.reps)
+            putNullable("rpe", current?.rpe)
+            putNullable("comment", current?.comment)
+            put("video_uri", uri)
+            if (current?.completedAt != null) put("completed_at", current.completedAt)
+            put("sync_state", "pending")
+        }
+        db.writableDatabase.insertWithOnConflict(
+            "local_set",
+            null,
+            values,
+            SQLiteDatabase.CONFLICT_REPLACE,
+        )
+        refreshSync(state.value.selectedDate, "Vídeo associado à série")
+    }
+
+    private fun refreshSync(date: String, message: String? = null) {
+        if (!importedDbFile.exists()) {
+            state.value = state.value.copy(
+                selectedDate = date,
+                workout = null,
+                lastMessage = "Importa primeiro os dados do MyStrengthBook/FitNotes.",
+                busy = false,
+            )
+            return
+        }
+
+        state.value = state.value.copy(busy = true)
+        val imported = SQLiteDatabase.openDatabase(
+            importedDbFile.absolutePath,
+            null,
+            SQLiteDatabase.OPEN_READONLY,
+        )
+        try {
+            reconcileMappings(imported)
+            val workout = loadWorkout(imported, date)
+            val mappings = loadMappingSummary()
+            state.value = StrengthExecutionState(
+                selectedDate = date,
+                workout = workout,
+                autoMappedCount = mappings.first,
+                reviewMappings = mappings.second,
+                lastMessage = message,
+                busy = false,
+            )
+        } finally {
+            imported.close()
+        }
+    }
+
+    private fun loadWorkout(imported: SQLiteDatabase, date: String): WorkoutDayPlan? {
+        val exercises = mutableListOf<WorkoutExercisePlan>()
+        imported.rawQuery(
+            """
+            SELECT source_id,display_name,notes,instructions
+            FROM planned_exercise
+            WHERE date=?
+            ORDER BY order_index
+            """.trimIndent(),
+            arrayOf(date),
+        ).use { c ->
+            while (c.moveToNext()) {
+                val sourceId = c.getString(0)
+                val name = c.getString(1)
+                val notes = if (c.isNull(2)) null else c.getString(2)
+                val instructions = if (c.isNull(3)) null else c.getString(3)
+                val mapping = mappingForName(normalizeExerciseName(name))
+                val rest = mapping?.fitExerciseId?.let { fitId ->
+                    imported.rawQuery(
+                        "SELECT default_rest_time FROM fit_exercise WHERE source_id=?",
+                        arrayOf(fitId.toString()),
+                    ).use { rc ->
+                        if (rc.moveToFirst() && !rc.isNull(0)) rc.getInt(0) else null
+                    }
+                } ?: 180
+
+                val sets = mutableListOf<WorkoutSetPlan>()
+                imported.rawQuery(
+                    """
+                    SELECT group_index,set_count,reps,rpe,load
+                    FROM planned_set_group
+                    WHERE source_exercise_id=?
+                    ORDER BY group_index
+                    """.trimIndent(),
+                    arrayOf(sourceId),
+                ).use { sc ->
+                    while (sc.moveToNext()) {
+                        val group = sc.getInt(0)
+                        val count = if (sc.isNull(1)) 1 else max(1, sc.getInt(1))
+                        val reps = if (sc.isNull(2)) null else sc.getInt(2)
+                        val rpe = if (sc.isNull(3)) null else sc.getDouble(3)
+                        val load = if (sc.isNull(4)) null else sc.getDouble(4)
+                        repeat(count) { setIndex ->
+                            val key = "$sourceId:$group:$setIndex"
+                            val local = loadLocalSet(key)
+                            sets += WorkoutSetPlan(
+                                key = key,
+                                sourceExerciseId = sourceId,
+                                groupIndex = group,
+                                setIndex = setIndex,
+                                prescribedLoad = load,
+                                prescribedReps = reps,
+                                prescribedRpe = rpe,
+                                actualLoad = local?.weight,
+                                actualReps = local?.reps,
+                                actualRpe = local?.rpe,
+                                completed = local?.completedAt != null,
+                                comment = local?.comment,
+                                videoUri = local?.videoUri,
+                            )
+                        }
+                    }
+                }
+
+                exercises += WorkoutExercisePlan(
+                    sourceId = sourceId,
+                    name = name,
+                    notes = notes,
+                    instructions = instructions,
+                    restSeconds = rest,
+                    mappedFitNotesName = mapping?.fitName,
+                    mappingConfidence = mapping?.confidence,
+                    sets = sets,
+                )
+            }
+        }
+        return if (exercises.isEmpty()) null else WorkoutDayPlan(date, exercises)
+    }
+
+    private fun restSecondsForExercise(sourceExerciseId: String): Int {
+        if (!importedDbFile.exists()) return 180
+        val imported = SQLiteDatabase.openDatabase(
+            importedDbFile.absolutePath,
+            null,
+            SQLiteDatabase.OPEN_READONLY,
+        )
+        return try {
+            var name: String? = null
+            imported.rawQuery(
+                "SELECT display_name FROM planned_exercise WHERE source_id=?",
+                arrayOf(sourceExerciseId),
+            ).use { c -> if (c.moveToFirst()) name = c.getString(0) }
+            val mapping = name?.let { mappingForName(normalizeExerciseName(it)) }
+            mapping?.fitExerciseId?.let { fitId ->
+                imported.rawQuery(
+                    "SELECT default_rest_time FROM fit_exercise WHERE source_id=?",
+                    arrayOf(fitId.toString()),
+                ).use { c ->
+                    if (c.moveToFirst() && !c.isNull(0)) c.getInt(0) else 180
+                }
+            } ?: 180
+        } finally {
+            imported.close()
+        }
+    }
+
+    private fun reconcileMappings(imported: SQLiteDatabase) {
+        val existing = mutableSetOf<String>()
+        db.readableDatabase.rawQuery("SELECT msb_normalized FROM exercise_map", null).use { c ->
+            while (c.moveToNext()) existing += c.getString(0)
+        }
+
+        val fitExercises = mutableListOf<FitCandidate>()
+        imported.rawQuery(
+            "SELECT source_id,name,default_rest_time FROM fit_exercise",
+            null,
+        ).use { c ->
+            while (c.moveToNext()) {
+                fitExercises += FitCandidate(
+                    id = c.getInt(0),
+                    name = c.getString(1),
+                    normalized = normalizeExerciseName(c.getString(1)),
+                )
+            }
+        }
+
+        val msbNames = linkedSetOf<String>()
+        imported.rawQuery("SELECT DISTINCT display_name FROM planned_exercise", null).use { c ->
+            while (c.moveToNext()) msbNames += c.getString(0)
+        }
+
+        val msbDates = loadDateSets(imported, "MSB")
+        val fitDates = loadDateSets(imported, "FITNOTES")
+
+        for (name in msbNames) {
+            val norm = normalizeExerciseName(name)
+            if (norm in existing) continue
+
+            var best: FitCandidate? = null
+            var bestScore = 0.0
+            for (fit in fitExercises) {
+                val nameScore = nameSimilarity(norm, fit.normalized)
+                if (nameScore < 0.35) continue
+                val overlap = dateOverlap(msbDates[name].orEmpty(), fitDates[fit.name].orEmpty())
+                val score = when {
+                    nameScore >= 0.999 -> 1.0
+                    overlap > 0.0 -> (nameScore * 0.72 + overlap * 0.28).coerceAtMost(0.99)
+                    else -> nameScore * 0.9
+                }
+                if (score > bestScore) {
+                    bestScore = score
+                    best = fit
+                }
+            }
+
+            val values = ContentValues().apply {
+                put("msb_normalized", norm)
+                put("msb_display", name)
+                putNullable("fit_exercise_id", best?.id)
+                putNullable("fit_name", best?.name)
+                put("confidence", bestScore)
+                put("confirmed", if (bestScore >= 0.95) 1 else 0)
+            }
+            db.writableDatabase.insertWithOnConflict(
+                "exercise_map",
+                null,
+                values,
+                SQLiteDatabase.CONFLICT_IGNORE,
+            )
+        }
+    }
+
+    private fun loadDateSets(imported: SQLiteDatabase, source: String): Map<String, Set<String>> {
+        val out = mutableMapOf<String, MutableSet<String>>()
+        imported.rawQuery(
+            "SELECT exercise_name,date FROM performed_set WHERE source=?",
+            arrayOf(source),
+        ).use { c ->
+            while (c.moveToNext()) {
+                out.getOrPut(c.getString(0)) { linkedSetOf() } += c.getString(1)
+            }
+        }
+        return out
+    }
+
+    private fun loadMappingSummary(): Pair<Int, List<MappingCandidate>> {
+        var auto = 0
+        val review = mutableListOf<MappingCandidate>()
+        db.readableDatabase.rawQuery(
+            """
+            SELECT msb_display,fit_name,confidence,confirmed
+            FROM exercise_map
+            ORDER BY confidence DESC,msb_display
+            """.trimIndent(),
+            null,
+        ).use { c ->
+            while (c.moveToNext()) {
+                val confirmed = c.getInt(3) == 1
+                if (confirmed) auto++
+                else {
+                    review += MappingCandidate(
+                        msbName = c.getString(0),
+                        fitNotesName = if (c.isNull(1)) null else c.getString(1),
+                        confidence = c.getDouble(2),
+                        autoMapped = false,
+                    )
+                }
+            }
+        }
+        return auto to review.take(20)
+    }
+
+    private fun mappingForName(normalized: String): MappingRow? {
+        db.readableDatabase.rawQuery(
+            """
+            SELECT fit_exercise_id,fit_name,confidence,confirmed
+            FROM exercise_map
+            WHERE msb_normalized=?
+            """.trimIndent(),
+            arrayOf(normalized),
+        ).use { c ->
+            if (!c.moveToFirst()) return null
+            if (c.isNull(0)) return null
+            return MappingRow(
+                fitExerciseId = c.getInt(0),
+                fitName = if (c.isNull(1)) null else c.getString(1),
+                confidence = c.getDouble(2),
+                confirmed = c.getInt(3) == 1,
+            )
+        }
+    }
+
+    private fun loadLocalSet(key: String): LocalSetRow? {
+        db.readableDatabase.rawQuery(
+            """
+            SELECT weight,reps,rpe,comment,video_uri,completed_at
+            FROM local_set WHERE set_key=?
+            """.trimIndent(),
+            arrayOf(key),
+        ).use { c ->
+            if (!c.moveToFirst()) return null
+            return LocalSetRow(
+                weight = if (c.isNull(0)) null else c.getDouble(0),
+                reps = if (c.isNull(1)) null else c.getInt(1),
+                rpe = if (c.isNull(2)) null else c.getDouble(2),
+                comment = if (c.isNull(3)) null else c.getString(3),
+                videoUri = if (c.isNull(4)) null else c.getString(4),
+                completedAt = if (c.isNull(5)) null else c.getLong(5),
+            )
+        }
+    }
+
+    private data class FitCandidate(val id: Int, val name: String, val normalized: String)
+    private data class MappingRow(
+        val fitExerciseId: Int,
+        val fitName: String?,
+        val confidence: Double,
+        val confirmed: Boolean,
+    )
+    private data class LocalSetRow(
+        val weight: Double?,
+        val reps: Int?,
+        val rpe: Double?,
+        val comment: String?,
+        val videoUri: String?,
+        val completedAt: Long?,
+    )
+}
+
+private class ExecutionDb(context: Context) :
+    SQLiteOpenHelper(context, "strength_execution.db", null, 1) {
+
+    override fun onCreate(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE exercise_map(
+                msb_normalized TEXT PRIMARY KEY,
+                msb_display TEXT NOT NULL,
+                fit_exercise_id INTEGER,
+                fit_name TEXT,
+                confidence REAL NOT NULL DEFAULT 0,
+                confirmed INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            CREATE TABLE local_set(
+                set_key TEXT PRIMARY KEY,
+                source_exercise_id TEXT NOT NULL,
+                group_index INTEGER NOT NULL,
+                set_index INTEGER NOT NULL,
+                weight REAL,
+                reps INTEGER,
+                rpe REAL,
+                comment TEXT,
+                video_uri TEXT,
+                completed_at INTEGER,
+                sync_state TEXT NOT NULL DEFAULT 'pending'
+            )
+            """.trimIndent()
+        )
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+}
+
+private fun normalizeExerciseName(input: String): String {
+    var s = input.lowercase(Locale.ROOT)
+        .replace("&", " and ")
+        .replace(Regex("[^a-z0-9]+"), " ")
+        .trim()
+
+    val replacements = listOf(
+        Regex("\bdl\b") to "deadlift",
+        Regex("\bdead lift\b") to "deadlift",
+        Regex("\bcomp\b") to "competition",
+        Regex("\bpause\b") to "paused",
+        Regex("\bhb\b") to "high bar",
+        Regex("\blb\b") to "low bar",
+        Regex("\boh\b") to "overhead",
+        Regex("\btriceps\b") to "tricep",
+        Regex("\bextensions\b") to "extension",
+        Regex("\brows\b") to "row",
+        Regex("\bcurls\b") to "curl",
+    )
+    for ((regex, value) in replacements) s = s.replace(regex, value)
+
+    return s.split(Regex("\s+"))
+        .filter { it.isNotBlank() }
+        .joinToString(" ")
+}
+
+private fun nameSimilarity(a: String, b: String): Double {
+    if (a == b) return 1.0
+    val ta = a.split(" ").filter { it.isNotBlank() }.toSet()
+    val tb = b.split(" ").filter { it.isNotBlank() }.toSet()
+    if (ta.isEmpty() || tb.isEmpty()) return 0.0
+
+    val intersection = ta.intersect(tb).size.toDouble()
+    val union = ta.union(tb).size.toDouble()
+    var jaccard = intersection / union
+
+    val primary = listOf("squat", "bench", "deadlift")
+    val pa = primary.firstOrNull { it in ta }
+    val pb = primary.firstOrNull { it in tb }
+    if (pa != null && pb != null && pa != pb) return 0.0
+    if (pa != null && pa == pb) jaccard = (jaccard + 0.18).coerceAtMost(1.0)
+
+    return jaccard
+}
+
+private fun dateOverlap(a: Set<String>, b: Set<String>): Double {
+    if (a.isEmpty() || b.isEmpty()) return 0.0
+    val intersection = a.intersect(b).size.toDouble()
+    val minSize = minOf(a.size, b.size).toDouble()
+    return if (minSize == 0.0) 0.0 else (intersection / minSize).coerceAtMost(1.0)
+}
+
+private fun formatSeconds(seconds: Int): String {
+    val m = seconds / 60
+    val s = seconds % 60
+    return "%d:%02d".format(m, s)
+}
+
+private fun ContentValues.putNullable(key: String, value: Int?) {
+    if (value == null) putNull(key) else put(key, value)
+}
+
+private fun ContentValues.putNullable(key: String, value: Double?) {
+    if (value == null || value.isNaN()) putNull(key) else put(key, value)
+}
+
+private fun ContentValues.putNullable(key: String, value: String?) {
+    if (value == null) putNull(key) else put(key, value)
+}
