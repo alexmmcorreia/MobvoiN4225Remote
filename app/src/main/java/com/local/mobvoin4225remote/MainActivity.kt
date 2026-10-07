@@ -17,6 +17,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -50,6 +51,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -141,15 +143,17 @@ class MainActivity : ComponentActivity() {
     private lateinit var controller: TreadmillController
     private lateinit var healthConnect: HealthConnectBridge
     private lateinit var heartRateMonitor: HeartRateMonitor
+    private lateinit var trainingRepository: TrainingRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         controller = TreadmillController(this)
         healthConnect = HealthConnectBridge(this)
         heartRateMonitor = HeartRateMonitor(this)
+        trainingRepository = TrainingRepository(this)
         setContent {
             MaterialTheme {
-                N4225Screen(controller, healthConnect, heartRateMonitor)
+                N4225Screen(controller, healthConnect, heartRateMonitor, trainingRepository)
             }
         }
     }
@@ -780,14 +784,42 @@ private fun N4225Screen(
     controller: TreadmillController,
     healthConnect: HealthConnectBridge,
     heartRateMonitor: HeartRateMonitor,
+    trainingRepository: TrainingRepository,
 ) {
     val state by controller.state.collectAsState()
     val watch by heartRateMonitor.state.collectAsState()
+    val strength by trainingRepository.state.collectAsState()
+    val context = LocalContext.current
     var page by remember { mutableIntStateOf(0) }
     var showStartConfirm by remember { mutableStateOf(false) }
     var healthAvailable by remember { mutableStateOf(false) }
     var healthGranted by remember { mutableStateOf(false) }
     var healthMessage by remember { mutableStateOf<String?>(null) }
+
+    val importScope = rememberCoroutineScope()
+
+    val msbImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val stream = context.contentResolver.openInputStream(uri)
+            if (stream != null) {
+                importScope.launch { stream.use { trainingRepository.importMsb(it) } }
+            }
+        }
+    }
+
+    val fitNotesImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val name = queryDisplayName(context, uri)
+            val stream = context.contentResolver.openInputStream(uri)
+            if (stream != null) {
+                importScope.launch { stream.use { trainingRepository.importFitNotes(it, name) } }
+            }
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -846,15 +878,21 @@ private fun N4225Screen(
             }
         }
 
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            NavButton("Treino", page == 0, Modifier.weight(1f)) { page = 0 }
-            NavButton("Histórico", page == 1, Modifier.weight(1f)) { page = 1 }
-            NavButton("Mais", page == 2, Modifier.weight(1f)) { page = 2 }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            NavButton("Passadeira", page == 0, Modifier.weight(1f)) { page = 0 }
+            NavButton("Força", page == 1, Modifier.weight(1f)) { page = 1 }
+            NavButton("Histórico", page == 2, Modifier.weight(1f)) { page = 2 }
+            NavButton("Mais", page == 3, Modifier.weight(1f)) { page = 3 }
         }
 
         when (page) {
             0 -> WorkoutPage(state, watch, controller) { showStartConfirm = true }
-            1 -> HistoryPage(
+            1 -> StrengthPage(
+                s = strength,
+                importMsb = { msbImportLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+                importFitNotes = { fitNotesImportLauncher.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
+            )
+            2 -> HistoryPage(
                 s = state,
                 c = controller,
                 healthConnect = healthConnect,
@@ -1025,6 +1063,92 @@ private fun SmallMetric(label: String, value: String, modifier: Modifier = Modif
         Column(Modifier.padding(10.dp)) {
             Text(label, style = MaterialTheme.typography.labelMedium)
             Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun StrengthPage(
+    s: StrengthDataState,
+    importMsb: () -> Unit,
+    importFitNotes: () -> Unit,
+) {
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Dados de força", fontWeight = FontWeight.Bold)
+                    Text(
+                        "Os dados ficam apenas no telemóvel. Os backups pessoais não são enviados para o repositório GitHub.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = importMsb, enabled = !s.busy) { Text("Importar MSB") }
+                        Button(onClick = importFitNotes, enabled = !s.busy) { Text("Importar FitNotes") }
+                    }
+                    if (s.busy) Text("A importar…")
+                    s.lastMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+        }
+
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Fontes", fontWeight = FontWeight.Bold)
+                    Text(
+                        if (s.msb.imported) "MyStrengthBook ✓ — ${s.msb.details}"
+                        else "MyStrengthBook — ainda não importado"
+                    )
+                    Text(
+                        if (s.fitNotes.imported) "FitNotes ✓ — ${s.fitNotes.details}"
+                        else "FitNotes — ainda não importado"
+                    )
+                }
+            }
+        }
+
+        item {
+            Text("Calendário / reconciliação", fontWeight = FontWeight.Bold)
+        }
+
+        if (s.days.isEmpty()) {
+            item {
+                Text("Importa primeiro o msb_capture.json e o backup .fitnotes/.zip.")
+            }
+        } else {
+            items(s.days.take(90), key = { it.date }) { day ->
+                StrengthDayCard(day)
+            }
+        }
+    }
+}
+
+@Composable
+private fun StrengthDayCard(day: StrengthDaySummary) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(day.date, fontWeight = FontWeight.Bold)
+            val status = when {
+                day.hasPlan && day.fitNotesSets > 0 -> "Planeado + execução FitNotes"
+                day.hasPlan && day.msbActualSets > 0 -> "Planeado + execução MSB"
+                day.hasPlan -> "Planeado"
+                day.hasActual -> "Executado"
+                else -> "—"
+            }
+            Text(status)
+            if (day.hasPlan) {
+                Text("${day.plannedExercises} exercícios · ${day.plannedSetGroups} grupos prescritos")
+            }
+            if (day.msbActualSets > 0 || day.fitNotesSets > 0) {
+                Text("Séries: MSB ${day.msbActualSets} · FitNotes ${day.fitNotesSets}")
+            }
+            if (day.exerciseNames.isNotEmpty()) {
+                Text(
+                    day.exerciseNames.take(6).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }
@@ -1403,3 +1527,18 @@ private fun ByteArray.u32(offset: Int): UInt =
 
 private fun ByteArray.toHex(): String = joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
 private fun UUID.short(): String = toString().substring(4, 8)
+
+
+private fun queryDisplayName(context: Context, uri: android.net.Uri): String? {
+    return runCatching {
+        context.contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull()
+}
