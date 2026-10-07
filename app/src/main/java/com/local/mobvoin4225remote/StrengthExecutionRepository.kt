@@ -43,6 +43,10 @@ data class WorkoutExercisePlan(
 
 data class WorkoutDayPlan(
     val date: String,
+    val program: Int?,
+    val week: Int?,
+    val session: Int?,
+    val programInstance: Int?,
     val exercises: List<WorkoutExercisePlan>,
 ) {
     val totalSets: Int get() = exercises.sumOf { it.sets.size }
@@ -220,9 +224,14 @@ class StrengthExecutionRepository(context: Context) {
 
     private fun loadWorkout(imported: SQLiteDatabase, date: String): WorkoutDayPlan? {
         val exercises = mutableListOf<WorkoutExercisePlan>()
+        var program: Int? = null
+        var week: Int? = null
+        var session: Int? = null
+        var programInstance: Int? = null
         imported.rawQuery(
             """
-            SELECT source_id,display_name,notes,instructions
+            SELECT source_id,display_name,notes,instructions,
+                   program,program_week,program_session,program_instance
             FROM planned_exercise
             WHERE date=?
             ORDER BY order_index
@@ -234,6 +243,10 @@ class StrengthExecutionRepository(context: Context) {
                 val name = c.getString(1)
                 val notes = if (c.isNull(2)) null else c.getString(2)
                 val instructions = if (c.isNull(3)) null else c.getString(3)
+                if (program == null && !c.isNull(4)) program = c.getInt(4)
+                if (week == null && !c.isNull(5)) week = c.getInt(5)
+                if (session == null && !c.isNull(6)) session = c.getInt(6)
+                if (programInstance == null && !c.isNull(7)) programInstance = c.getInt(7)
                 val mapping = mappingForName(normalizeExerciseName(name))
                 val rest = mapping?.fitExerciseId?.let { fitId ->
                     imported.rawQuery(
@@ -300,7 +313,14 @@ class StrengthExecutionRepository(context: Context) {
                 )
             }
         }
-        return if (exercises.isEmpty()) null else WorkoutDayPlan(date, exercises)
+        return if (exercises.isEmpty()) null else WorkoutDayPlan(
+            date = date,
+            program = program,
+            week = week,
+            session = session,
+            programInstance = programInstance,
+            exercises = exercises,
+        )
     }
 
     private fun restSecondsForExercise(sourceExerciseId: String): Int {
