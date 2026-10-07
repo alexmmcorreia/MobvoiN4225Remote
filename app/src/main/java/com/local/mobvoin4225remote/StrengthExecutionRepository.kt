@@ -4,7 +4,10 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -89,11 +92,20 @@ class StrengthExecutionRepository(context: Context) {
     private val appContext = context.applicationContext
     private val db = ExecutionDb(appContext)
     private val importedDbFile: File get() = appContext.getDatabasePath("training_hub.db")
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    val state = MutableStateFlow(StrengthExecutionState())
+    val state = MutableStateFlow(StrengthExecutionState(busy = true))
 
     init {
-        runCatching { refreshSync(LocalDate.now().toString()) }
+        scope.launch {
+            runCatching { refreshSync(LocalDate.now().toString()) }
+                .onFailure { error ->
+                    state.value = state.value.copy(
+                        busy = false,
+                        lastMessage = "Falha a carregar treino: ${error.message ?: "erro desconhecido"}",
+                    )
+                }
+        }
     }
 
     suspend fun refresh(date: String = state.value.selectedDate) = withContext(Dispatchers.IO) {
