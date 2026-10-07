@@ -13,7 +13,7 @@
         android:allowBackup="false"
         android:label="Mobvoi N4225 Remote"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.DeviceDefault.DayNight.NoActionBar">
+        android:theme="@android:style/Theme.Material.NoActionBar">
         <activity
             android:name=".MainActivity"
             android:exported="true">
