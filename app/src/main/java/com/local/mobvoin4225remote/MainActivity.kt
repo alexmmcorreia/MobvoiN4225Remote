@@ -1148,6 +1148,7 @@ private fun TodayStrengthPage(
 ) {
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
+    var freeExerciseName by remember { mutableStateOf("") }
     var restEndMs by remember { mutableStateOf<Long?>(null) }
     var restRemaining by remember { mutableIntStateOf(0) }
 
@@ -1220,9 +1221,24 @@ private fun TodayStrengthPage(
         if (workout == null) {
             item {
                 Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("Sem treino MSB planeado", fontWeight = FontWeight.Bold)
-                        Text("Escolhe outro dia no calendário ou atualiza a importação do MyStrengthBook.")
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Sem treino planeado", fontWeight = FontWeight.Bold)
+                        Text("Podes treinar na mesma sem depender do MyStrengthBook.")
+                        OutlinedTextField(
+                            value = freeExerciseName,
+                            onValueChange = { freeExerciseName = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            label = { Text("Adicionar exercício livre") },
+                        )
+                        Button(
+                            onClick = {
+                                val name = freeExerciseName
+                                freeExerciseName = ""
+                                scope.launch { repository.addFreeExercise(name) }
+                            },
+                            enabled = freeExerciseName.isNotBlank(),
+                        ) { Text("Começar treino livre") }
                         execution.lastMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     }
                 }
@@ -1261,6 +1277,29 @@ private fun TodayStrengthPage(
                     onChooseVideo = onChooseVideo,
                 )
             }
+
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Adicionar exercício extra", fontWeight = FontWeight.Bold)
+                        OutlinedTextField(
+                            value = freeExerciseName,
+                            onValueChange = { freeExerciseName = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            label = { Text("Exercício") },
+                        )
+                        Button(
+                            onClick = {
+                                val name = freeExerciseName
+                                freeExerciseName = ""
+                                scope.launch { repository.addFreeExercise(name) }
+                            },
+                            enabled = freeExerciseName.isNotBlank(),
+                        ) { Text("Adicionar") }
+                    }
+                }
+            }
         }
     }
 }
@@ -1273,6 +1312,7 @@ private fun StrengthExerciseCard(
     onFilmSet: (WorkoutSetPlan) -> Unit,
     onChooseVideo: (WorkoutSetPlan) -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
     val nextIncomplete = exercise.sets.firstOrNull { !it.completed }
 
     Card(Modifier.fillMaxWidth()) {
@@ -1291,6 +1331,16 @@ private fun StrengthExerciseCard(
             }
             exercise.lastPerformance?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall)
+            }
+            if (exercise.isFree) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(onClick = {
+                        scope.launch { repository.addFreeSet(exercise.sourceId) }
+                    }) { Text("+ série") }
+                    TextButton(onClick = {
+                        scope.launch { repository.deleteFreeExercise(exercise.sourceId) }
+                    }) { Text("Remover exercício") }
+                }
             }
             exercise.bestRecentE1rm?.let {
                 Text(
