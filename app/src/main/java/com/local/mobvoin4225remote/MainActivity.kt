@@ -25,12 +25,12 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -39,12 +39,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -53,14 +50,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.max
 import kotlin.math.roundToInt
 
 private val FTMS_SERVICE: UUID = uuid16(0x1826)
@@ -97,13 +96,26 @@ data class Telemetry(
     val powerW: Int? = null,
 )
 
+data class LiveSession(
+    val active: Boolean = false,
+    val paused: Boolean = false,
+    val startedAtMs: Long? = null,
+    val durationSec: Int = 0,
+    val distanceKm: Double = 0.0,
+    val caloriesKcal: Int? = null,
+    val averageSpeedKmh: Double = 0.0,
+    val maxSpeedKmh: Double = 0.0,
+    val averageHeartRateBpm: Int? = null,
+    val maxHeartRateBpm: Int? = null,
+)
+
 data class AppState(
     val scanning: Boolean = false,
     val candidateName: String? = null,
     val candidateAddress: String? = null,
     val connectedName: String? = null,
     val connectedAddress: String? = null,
-    val connection: String = "Disconnected",
+    val connection: String = "Desligada",
     val controlReady: Boolean = false,
     val targetSpeed: Double = 1.0,
     val speedRange: Range3 = Range3(1.0, 6.0, 0.5),
@@ -118,6 +130,8 @@ data class AppState(
     val trainingStatus: String = "—",
     val lastControlResponse: String = "—",
     val savedAddress: String? = null,
+    val liveSession: LiveSession = LiveSession(),
+    val history: List<WorkoutSession> = emptyList(),
     val logs: List<String> = emptyList(),
 )
 
@@ -145,9 +159,13 @@ class TreadmillController(private val context: Context) {
     private val manager = context.getSystemService(BluetoothManager::class.java)
     private val adapter: BluetoothAdapter? get() = manager?.adapter
     private val prefs = context.getSharedPreferences("n4225", Context.MODE_PRIVATE)
+    private val sessionStore = SessionStore(context)
 
     val state = MutableStateFlow(
-        AppState(savedAddress = prefs.getString("saved_address", null))
+        AppState(
+            savedAddress = prefs.getString("saved_address", null),
+            history = sessionStore.load(),
+        )
     )
 
     private var candidate: BluetoothDevice? = null
@@ -165,6 +183,16 @@ class TreadmillController(private val context: Context) {
     private val subscriptionQueue = ArrayDeque<Subscription>()
     private val readQueue = ArrayDeque<BluetoothGattCharacteristic>()
 
+    private var sessionBaseElapsed: Int? = null
+    private var sessionBaseDistance: Double? = null
+    private var sessionBaseCalories: Int? = null
+    private var sessionMaxSpeed = 0.0
+    private var hrSum = 0L
+    private var hrSamples = 0
+    private var hrMax: Int? = null
+    private var pendingPause = false
+    private var pendingStop = false
+
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val advertisedName = result.scanRecord?.deviceName
@@ -176,24 +204,30 @@ class TreadmillController(private val context: Context) {
             val device = result.device
             candidate = device
             val address = device.address
+            val currentSaved = state.value.savedAddress
+            if (currentSaved == null) {
+                prefs.edit().putString("saved_address", address).apply()
+            }
+
             state.update {
                 it.copy(
                     candidateName = advertisedName ?: "Mobvoi WTMP",
                     candidateAddress = address,
+                    savedAddress = currentSaved ?: address,
                     scanning = false,
-                    connection = "Treadmill found",
+                    connection = "Encontrada",
                 )
             }
             stopScan()
-            log("Found ${advertisedName ?: "Mobvoi WTMP"} at $address")
+            log("Encontrada ${advertisedName ?: "Mobvoi WTMP"} em $address")
 
-            if (state.value.savedAddress == address) {
+            if (currentSaved == null || currentSaved == address) {
                 connect(device)
             }
         }
 
         override fun onScanFailed(errorCode: Int) {
-            state.update { it.copy(scanning = false, connection = "Scan failed ($errorCode)") }
+            state.update { it.copy(scanning = false, connection = "Falha na procura ($errorCode)") }
             log("Scan failed: $errorCode")
         }
     }
@@ -204,38 +238,39 @@ class TreadmillController(private val context: Context) {
                 gatt = g
                 state.update {
                     it.copy(
-                        connection = "Connected; discovering services…",
+                        connection = "Ligada; a preparar…",
                         connectedName = runCatching { g.device.name }.getOrNull() ?: "Mobvoi WTMP",
                         connectedAddress = g.device.address,
                         controlReady = false,
                     )
                 }
-                log("Connected, GATT status $status")
+                log("Ligada, GATT status $status")
                 g.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                if (state.value.liveSession.active) finishSession()
                 if (gatt === g) gatt = null
                 controlPoint = null
                 state.update {
                     it.copy(
-                        connection = "Disconnected",
+                        connection = "Desligada",
                         controlReady = false,
                         connectedName = null,
                         connectedAddress = null,
                     )
                 }
-                log("Disconnected, GATT status $status")
+                log("Desligada, GATT status $status")
                 runCatching { g.close() }
             }
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                state.update { it.copy(connection = "Service discovery failed ($status)") }
+                state.update { it.copy(connection = "Falha ao descobrir serviços ($status)") }
                 return
             }
             val service = g.getService(FTMS_SERVICE)
             if (service == null) {
-                state.update { it.copy(connection = "FTMS service 0x1826 not found") }
+                state.update { it.copy(connection = "Serviço FTMS não encontrado") }
                 return
             }
             prepareService(g, service)
@@ -287,17 +322,22 @@ class TreadmillController(private val context: Context) {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
 
+    fun autoConnect() {
+        if (!hasPermissions()) return
+        startScan()
+    }
+
     fun startScan() {
         if (!hasPermissions()) {
-            state.update { it.copy(connection = "Bluetooth permission required") }
+            state.update { it.copy(connection = "É necessária permissão Bluetooth") }
             return
         }
         val a = adapter ?: run {
-            state.update { it.copy(connection = "Bluetooth unavailable") }
+            state.update { it.copy(connection = "Bluetooth indisponível") }
             return
         }
         if (!a.isEnabled) {
-            state.update { it.copy(connection = "Turn Bluetooth on") }
+            state.update { it.copy(connection = "Liga o Bluetooth") }
             return
         }
         stopScan()
@@ -307,10 +347,10 @@ class TreadmillController(private val context: Context) {
                 scanning = true,
                 candidateName = null,
                 candidateAddress = null,
-                connection = "Scanning for Mobvoi WTMP…",
+                connection = "À procura da passadeira…",
             )
         }
-        log("Scan started")
+        log("Procura iniciada")
         a.bluetoothLeScanner.startScan(scanCallback)
     }
 
@@ -321,56 +361,48 @@ class TreadmillController(private val context: Context) {
     }
 
     fun connectCandidate() {
-        candidate?.let { connect(it) }
-            ?: state.update { it.copy(connection = "Scan for the treadmill first") }
+        candidate?.let { connect(it) } ?: startScan()
     }
 
     fun connectSaved() {
         val address = state.value.savedAddress ?: run {
-            state.update { it.copy(connection = "No treadmill saved yet") }
+            startScan()
             return
         }
         if (!hasPermissions()) return
         val device = runCatching { adapter?.getRemoteDevice(address) }.getOrNull()
         if (device == null) {
-            state.update { it.copy(connection = "Could not open saved Bluetooth device") }
+            startScan()
             return
         }
         connect(device)
     }
 
-    fun saveCurrent() {
-        val address = state.value.connectedAddress ?: state.value.candidateAddress ?: return
-        prefs.edit().putString("saved_address", address).apply()
-        state.update { it.copy(savedAddress = address) }
-        log("Saved treadmill $address")
-    }
-
     fun forgetSaved() {
+        disconnect()
         prefs.edit().remove("saved_address").apply()
         state.update { it.copy(savedAddress = null) }
-        log("Saved treadmill removed")
+        log("Passadeira guardada removida")
     }
 
     private fun connect(device: BluetoothDevice) {
         if (!hasPermissions()) return
         stopScan()
         runCatching { gatt?.close() }
-        state.update {
-            it.copy(connection = "Connecting…", controlReady = false)
-        }
-        log("Connecting to ${device.address}")
+        state.update { it.copy(connection = "A ligar…", controlReady = false) }
+        log("A ligar a ${device.address}")
         gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
     }
 
     fun disconnect() {
         stopScan()
+        if (state.value.liveSession.active) finishSession()
         runCatching { gatt?.disconnect() }
         runCatching { gatt?.close() }
         gatt = null
         state.update {
             it.copy(
-                connection = "Disconnected",
+                connection = "Desligada",
                 connectedName = null,
                 connectedAddress = null,
                 controlReady = false,
@@ -389,7 +421,7 @@ class TreadmillController(private val context: Context) {
         trainingStatus = service.getCharacteristic(TRAINING_STATUS_UUID)
 
         if (controlPoint == null) {
-            state.update { it.copy(connection = "FTMS Control Point 0x2AD9 not found") }
+            state.update { it.copy(connection = "Control Point FTMS não encontrado") }
             return
         }
 
@@ -409,7 +441,7 @@ class TreadmillController(private val context: Context) {
             POWER_RANGE_UUID,
         ).mapNotNull { service.getCharacteristic(it) }.forEach { readQueue.add(it) }
 
-        state.update { it.copy(connection = "Configuring FTMS…") }
+        state.update { it.copy(connection = "A configurar FTMS…") }
         processNextSubscription(g)
     }
 
@@ -440,7 +472,7 @@ class TreadmillController(private val context: Context) {
     private fun processNextRead(g: BluetoothGatt) {
         val next = readQueue.removeFirstOrNull()
         if (next == null) {
-            state.update { it.copy(connection = "FTMS ready; requesting control…") }
+            state.update { it.copy(connection = "FTMS pronto; a pedir controlo…") }
             requestControl()
             return
         }
@@ -495,11 +527,28 @@ class TreadmillController(private val context: Context) {
             CONTROL_POINT_UUID -> handleControlResponse(value)
             TREADMILL_DATA_UUID -> {
                 val telemetry = parseTreadmillData(value)
+                updateSessionFromTelemetry(telemetry)
                 state.update { it.copy(telemetry = telemetry) }
             }
             MACHINE_STATUS_UUID -> {
+                val opcode = value.firstOrNull()?.toInt()?.and(0xFF)
                 val text = describeMachineStatus(value)
                 state.update { it.copy(machineStatus = text) }
+                when (opcode) {
+                    0x04 -> {
+                        if (!state.value.liveSession.active) beginSession()
+                        else state.update { it.copy(liveSession = it.liveSession.copy(paused = false)) }
+                        pendingPause = false
+                    }
+                    0x02 -> {
+                        if (pendingPause) {
+                            state.update { it.copy(liveSession = it.liveSession.copy(paused = true)) }
+                            pendingPause = false
+                        } else if (state.value.liveSession.active) {
+                            finishSession()
+                        }
+                    }
+                }
                 log("Status: $text")
             }
             TRAINING_STATUS_UUID -> {
@@ -522,14 +571,42 @@ class TreadmillController(private val context: Context) {
                 lastControlResponse = message,
             )
         }
+        if (result == 0x01) {
+            when (request) {
+                0x07 -> {
+                    if (!state.value.liveSession.active) beginSession()
+                    else state.update { it.copy(liveSession = it.liveSession.copy(paused = false)) }
+                }
+                0x08 -> {
+                    if (pendingStop) {
+                        finishSession()
+                        pendingStop = false
+                    }
+                }
+            }
+        }
         log("Control response $message")
     }
 
     fun requestControl() = sendControl(byteArrayOf(0x00))
-    fun reset() = sendControl(byteArrayOf(0x01))
-    fun start() = sendControl(byteArrayOf(0x07))
-    fun stop() = sendControl(byteArrayOf(0x08, 0x01))
-    fun pause() = sendControl(byteArrayOf(0x08, 0x02))
+
+    fun start() {
+        pendingPause = false
+        pendingStop = false
+        sendControl(byteArrayOf(0x07))
+    }
+
+    fun stop() {
+        pendingStop = true
+        pendingPause = false
+        sendControl(byteArrayOf(0x08, 0x01))
+    }
+
+    fun pause() {
+        pendingPause = true
+        pendingStop = false
+        sendControl(byteArrayOf(0x08, 0x02))
+    }
 
     fun setSpeed(kmh: Double) {
         val r = state.value.speedRange
@@ -541,47 +618,116 @@ class TreadmillController(private val context: Context) {
 
     fun changeSpeed(delta: Double) = setSpeed(state.value.targetSpeed + delta)
 
-    fun setInclination(percent: Double) = sendSigned16(0x03, (percent * 10.0).roundToInt())
-    fun setResistance(level: Double) = sendSigned16(0x04, (level * 10.0).roundToInt())
-    fun setPower(watts: Int) = sendSigned16(0x05, watts)
-    fun setHeartRate(bpm: Int) = sendControl(byteArrayOf(0x06, bpm.coerceIn(0, 255).toByte()))
-    fun setEnergy(kcal: Int) = sendUnsigned16(0x09, kcal)
-    fun setSteps(steps: Int) = sendUnsigned16(0x0A, steps)
-    fun setStrides(strides: Int) = sendUnsigned16(0x0B, strides)
-    fun setDistance(metres: Int) {
-        val v = metres.coerceIn(0, 0xFFFFFF)
-        sendControl(
-            byteArrayOf(
-                0x0C,
-                (v and 0xFF).toByte(),
-                ((v ushr 8) and 0xFF).toByte(),
-                ((v ushr 16) and 0xFF).toByte(),
+    fun deleteSession(id: Long) {
+        val updated = state.value.history.filterNot { it.id == id }
+        sessionStore.save(updated)
+        state.update { it.copy(history = updated) }
+    }
+
+    private fun beginSession() {
+        if (state.value.liveSession.active) return
+        val t = state.value.telemetry
+        sessionBaseElapsed = t.elapsedSeconds
+        sessionBaseDistance = t.distanceKm
+        sessionBaseCalories = t.calories
+        sessionMaxSpeed = t.speedKmh ?: 0.0
+        hrSum = 0L
+        hrSamples = 0
+        hrMax = null
+        val started = System.currentTimeMillis()
+        state.update {
+            it.copy(
+                liveSession = LiveSession(
+                    active = true,
+                    paused = false,
+                    startedAtMs = started,
+                    maxSpeedKmh = sessionMaxSpeed,
+                )
             )
-        )
-    }
-    fun setTrainingTime(seconds: Int) = sendUnsigned16(0x0D, seconds)
-
-    private fun sendUnsigned16(opcode: Int, value: Int) {
-        val v = value.coerceIn(0, 0xFFFF)
-        sendControl(byteArrayOf(opcode.toByte(), (v and 0xFF).toByte(), ((v ushr 8) and 0xFF).toByte()))
+        }
+        log("Sessão iniciada")
     }
 
-    private fun sendSigned16(opcode: Int, value: Int) {
-        val v = value.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()) and 0xFFFF
-        sendControl(byteArrayOf(opcode.toByte(), (v and 0xFF).toByte(), ((v ushr 8) and 0xFF).toByte()))
+    private fun updateSessionFromTelemetry(t: Telemetry) {
+        val live = state.value.liveSession
+        if (!live.active) return
+
+        val duration = deltaCounter(t.elapsedSeconds, sessionBaseElapsed)
+            ?: ((System.currentTimeMillis() - (live.startedAtMs ?: System.currentTimeMillis())) / 1000L).toInt()
+        val distance = deltaCounter(t.distanceKm, sessionBaseDistance) ?: live.distanceKm
+        val calories = deltaCounter(t.calories, sessionBaseCalories)
+
+        t.speedKmh?.let { sessionMaxSpeed = max(sessionMaxSpeed, it) }
+        t.heartRate?.let { hr ->
+            hrSum += hr
+            hrSamples += 1
+            hrMax = max(hrMax ?: hr, hr)
+        }
+
+        val avgSpeed = if (duration > 0) distance * 3600.0 / duration else 0.0
+        state.update {
+            it.copy(
+                liveSession = it.liveSession.copy(
+                    durationSec = duration.coerceAtLeast(0),
+                    distanceKm = distance.coerceAtLeast(0.0),
+                    caloriesKcal = calories?.coerceAtLeast(0),
+                    averageSpeedKmh = avgSpeed.coerceAtLeast(0.0),
+                    maxSpeedKmh = sessionMaxSpeed,
+                    averageHeartRateBpm = if (hrSamples > 0) (hrSum / hrSamples).toInt() else null,
+                    maxHeartRateBpm = hrMax,
+                )
+            )
+        }
+    }
+
+    private fun finishSession() {
+        val live = state.value.liveSession
+        if (!live.active) return
+
+        val end = System.currentTimeMillis()
+        val duration = if (live.durationSec > 0) live.durationSec
+        else ((end - (live.startedAtMs ?: end)) / 1000L).toInt()
+
+        if (duration >= 5 || live.distanceKm >= 0.005) {
+            val session = WorkoutSession(
+                id = live.startedAtMs ?: end,
+                startedAtMs = live.startedAtMs ?: end,
+                endedAtMs = end,
+                durationSec = duration,
+                distanceKm = live.distanceKm,
+                averageSpeedKmh = live.averageSpeedKmh,
+                maxSpeedKmh = live.maxSpeedKmh,
+                caloriesKcal = live.caloriesKcal,
+                averageHeartRateBpm = live.averageHeartRateBpm,
+                maxHeartRateBpm = live.maxHeartRateBpm,
+            )
+            val updated = (listOf(session) + state.value.history).distinctBy { it.id }.sortedByDescending { it.startedAtMs }
+            sessionStore.save(updated)
+            state.update { it.copy(history = updated, liveSession = LiveSession()) }
+            log("Sessão gravada")
+        } else {
+            state.update { it.copy(liveSession = LiveSession()) }
+            log("Sessão curta descartada")
+        }
+
+        sessionBaseElapsed = null
+        sessionBaseDistance = null
+        sessionBaseCalories = null
+        pendingPause = false
+        pendingStop = false
     }
 
     private fun sendControl(bytes: ByteArray) {
         val g = gatt ?: run {
-            state.update { it.copy(connection = "Not connected") }
+            state.update { it.copy(connection = "Não ligada") }
             return
         }
         val c = controlPoint ?: return
         c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         c.value = bytes
         val started = g.writeCharacteristic(c)
-        log("TX ${bytes.toHex()} ${if (started) "" else "(not started)"}")
-        if (!started) state.update { it.copy(lastControlResponse = "Android did not start write") }
+        log("TX ${bytes.toHex()} ${if (started) "" else "(não iniciado)"}")
+        if (!started) state.update { it.copy(lastControlResponse = "Android não iniciou o write") }
     }
 
     private fun log(message: String) {
@@ -593,43 +739,59 @@ class TreadmillController(private val context: Context) {
 @Composable
 private fun N4225Screen(controller: TreadmillController) {
     val state by controller.state.collectAsState()
-    val context = LocalContext.current
     var page by remember { mutableIntStateOf(0) }
     var showStartConfirm by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { }
+    ) {
+        if (controller.hasPermissions()) controller.autoConnect()
+    }
 
     LaunchedEffect(Unit) {
         if (!controller.hasPermissions()) {
             permissionLauncher.launch(controller.requiredPermissions())
+        } else {
+            controller.autoConnect()
         }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose { }
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("Mobvoi N4225 Remote", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text(state.connection)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Column {
+                Text("N4225", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    if (state.controlReady) "Ligada e pronta" else state.connection,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            if (!state.controlReady) {
+                OutlinedButton(onClick = {
+                    if (controller.hasPermissions()) controller.autoConnect()
+                    else permissionLauncher.launch(controller.requiredPermissions())
+                }) {
+                    Text("Ligar")
+                }
+            }
+        }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            TextButton(onClick = { page = 0 }) { Text("Control") }
-            TextButton(onClick = { page = 1 }) { Text("Dados") }
-            TextButton(onClick = { page = 2 }) { Text("Diagnóstico") }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            NavButton("Treino", page == 0, Modifier.weight(1f)) { page = 0 }
+            NavButton("Histórico", page == 1, Modifier.weight(1f)) { page = 1 }
+            NavButton("Mais", page == 2, Modifier.weight(1f)) { page = 2 }
         }
 
         when (page) {
-            0 -> ControlPage(state, controller, {
-                permissionLauncher.launch(controller.requiredPermissions())
-            }, { showStartConfirm = true })
-            1 -> DataPage(state)
-            else -> DiagnosticsPage(state)
+            0 -> WorkoutPage(state, controller) { showStartConfirm = true }
+            1 -> HistoryPage(state, controller)
+            else -> MorePage(state, controller)
         }
     }
 
@@ -637,9 +799,7 @@ private fun N4225Screen(controller: TreadmillController) {
         AlertDialog(
             onDismissRequest = { showStartConfirm = false },
             title = { Text("Iniciar passadeira?") },
-            text = {
-                Text("Confirma que a zona do tapete está livre e que consegues alcançar o interruptor físico.")
-            },
+            text = { Text("Confirma que a zona do tapete está livre e que consegues alcançar o interruptor físico.") },
             confirmButton = {
                 Button(onClick = {
                     showStartConfirm = false
@@ -654,70 +814,54 @@ private fun N4225Screen(controller: TreadmillController) {
 }
 
 @Composable
-private fun ControlPage(
-    s: AppState,
-    c: TreadmillController,
-    requestPermissions: () -> Unit,
-    startWithConfirm: () -> Unit,
-) {
+private fun NavButton(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    if (selected) {
+        Button(onClick = onClick, modifier = modifier) { Text(label) }
+    } else {
+        TextButton(onClick = onClick, modifier = modifier) { Text(label) }
+    }
+}
+
+@Composable
+private fun WorkoutPage(s: AppState, c: TreadmillController, startWithConfirm: () -> Unit) {
+    val live = s.liveSession
+    val actualSpeed = s.telemetry.speedKmh ?: 0.0
+
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Ligação", fontWeight = FontWeight.Bold)
-                    Text("Encontrada: ${s.candidateName ?: "—"}  ${s.candidateAddress ?: ""}")
-                    Text("Ligada: ${s.connectedName ?: "—"}  ${s.connectedAddress ?: ""}")
-                    Text("Guardada: ${s.savedAddress ?: "—"}")
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        if (!c.hasPermissions()) {
-                            Button(onClick = requestPermissions) { Text("Permissões") }
-                        }
-                        Button(onClick = { c.startScan() }) { Text(if (s.scanning) "A procurar…" else "Procurar") }
-                        OutlinedButton(onClick = { c.connectCandidate() }) { Text("Ligar") }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(onClick = { c.connectSaved() }, enabled = s.savedAddress != null) { Text("Ligar guardada") }
-                        OutlinedButton(onClick = { c.saveCurrent() }, enabled = s.connectedAddress != null || s.candidateAddress != null) { Text("Guardar") }
-                        OutlinedButton(onClick = { c.disconnect() }) { Text("Desligar") }
-                    }
-                    if (s.savedAddress != null) {
-                        TextButton(onClick = { c.forgetSaved() }) { Text("Esquecer passadeira guardada") }
-                    }
-                }
-            }
-        }
-
-        item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Velocidade", fontWeight = FontWeight.Bold)
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(if (live.active) "TREINO EM CURSO" else "VELOCIDADE", style = MaterialTheme.typography.labelLarge)
                     Text(
-                        String.format(Locale.US, "%.1f km/h", s.targetSpeed),
-                        style = MaterialTheme.typography.displaySmall,
+                        "%.1f km/h".format(Locale.US, actualSpeed),
+                        style = MaterialTheme.typography.displayLarge,
+                        fontWeight = FontWeight.Bold,
                     )
-                    val r = s.speedRange
-                    Slider(
-                        value = s.targetSpeed.toFloat(),
-                        onValueChange = { c.setSpeed(it.toDouble()) },
-                        valueRange = r.min.toFloat()..r.max.toFloat(),
-                        steps = (((r.max - r.min) / r.step).roundToInt() - 1).coerceAtLeast(0),
-                        enabled = s.controlReady,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { c.changeSpeed(-s.speedRange.step) }, enabled = s.controlReady) { Text("−0,5") }
-                        Button(onClick = { c.changeSpeed(s.speedRange.step) }, enabled = s.controlReady) { Text("+0,5") }
+                    Text("Alvo: %.1f km/h".format(Locale.US, s.targetSpeed))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = { c.changeSpeed(-s.speedRange.step) },
+                            enabled = s.controlReady,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("− 0,5") }
+                        Button(
+                            onClick = { c.changeSpeed(s.speedRange.step) },
+                            enabled = s.controlReady,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("+ 0,5") }
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        var v = r.min
-                        while (v <= r.max + 0.001) {
+                        var v = s.speedRange.min
+                        while (v <= s.speedRange.max + 0.001) {
                             val speed = v
-                            OutlinedButton(onClick = { c.setSpeed(speed) }, enabled = s.controlReady) {
-                                Text(String.format(Locale.US, "%.1f", speed))
-                            }
-                            v += r.step
+                            OutlinedButton(
+                                onClick = { c.setSpeed(speed) },
+                                enabled = s.controlReady,
+                            ) { Text("%.1f".format(Locale.US, speed)) }
+                            v += s.speedRange.step
                         }
                     }
                 }
@@ -725,152 +869,184 @@ private fun ControlPage(
         }
 
         item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SmallMetric("Tempo", formatTime(live.durationSec), Modifier.weight(1f))
+                SmallMetric("Distância", "%.2f km".format(Locale.US, live.distanceKm), Modifier.weight(1f))
+                SmallMetric("Kcal", live.caloriesKcal?.toString() ?: "—", Modifier.weight(1f))
+            }
+        }
+
+        item {
+            if (!live.active) {
+                Button(
+                    onClick = startWithConfirm,
+                    enabled = s.controlReady,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("START") }
+            } else {
+                Button(
+                    onClick = { c.stop() },
+                    enabled = s.controlReady,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("STOP E GRAVAR") }
+
+                if (live.paused) {
+                    OutlinedButton(
+                        onClick = startWithConfirm,
+                        enabled = s.controlReady,
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    ) { Text("RETOMAR") }
+                } else {
+                    OutlinedButton(
+                        onClick = { c.pause() },
+                        enabled = s.controlReady,
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    ) { Text("PAUSA") }
+                }
+            }
+        }
+
+        item {
             Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Motor", fontWeight = FontWeight.Bold)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = startWithConfirm, enabled = s.controlReady) { Text("START / RESUME") }
-                        Button(onClick = { c.stop() }, enabled = s.controlReady) { Text("STOP") }
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Sessão", fontWeight = FontWeight.Bold)
+                    Text("Média: %.1f km/h".format(Locale.US, live.averageSpeedKmh))
+                    Text("Máxima: %.1f km/h".format(Locale.US, live.maxSpeedKmh))
+                    Text("FC média: ${live.averageHeartRateBpm?.let { "$it bpm" } ?: "—"}")
+                    if (!live.active) {
+                        Text("Ao carregar START, a sessão começa a ser gravada automaticamente.")
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { c.pause() }, enabled = s.controlReady) { Text("PAUSE") }
-                        OutlinedButton(onClick = { c.requestControl() }, enabled = s.connectedAddress != null) { Text("Request Control") }
-                        OutlinedButton(onClick = { c.reset() }, enabled = s.controlReady) { Text("Reset") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SmallMetric(label: String, value: String, modifier: Modifier = Modifier) {
+    Card(modifier) {
+        Column(Modifier.padding(10.dp)) {
+            Text(label, style = MaterialTheme.typography.labelMedium)
+            Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun HistoryPage(s: AppState, c: TreadmillController) {
+    val totalDistance = s.history.sumOf { it.distanceKm }
+    val totalSeconds = s.history.sumOf { it.durationSec }
+
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("Resumo", fontWeight = FontWeight.Bold)
+                    Text("${s.history.size} sessões · %.1f km · %s".format(Locale.US, totalDistance, formatLongDuration(totalSeconds)))
+                }
+            }
+        }
+
+        if (s.history.isEmpty()) {
+            item {
+                Text("Ainda não há sessões gravadas. A próxima fica guardada automaticamente quando terminares com STOP.")
+            }
+        } else {
+            items(s.history, key = { it.id }) { session ->
+                SessionCard(session) { c.deleteSession(session.id) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionCard(session: WorkoutSession, onDelete: () -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(formatDate(session.startedAtMs), fontWeight = FontWeight.Bold)
+            Text("${formatTime(session.durationSec)} · %.2f km".format(Locale.US, session.distanceKm))
+            Text(
+                "Média %.1f km/h · Máx %.1f km/h".format(
+                    Locale.US,
+                    session.averageSpeedKmh,
+                    session.maxSpeedKmh,
+                )
+            )
+            val extras = buildList {
+                session.caloriesKcal?.let { add("$it kcal") }
+                session.averageHeartRateBpm?.let { add("FC média $it") }
+                session.maxHeartRateBpm?.let { add("FC máx $it") }
+            }
+            if (extras.isNotEmpty()) Text(extras.joinToString(" · "))
+            TextButton(onClick = onDelete) { Text("Apagar") }
+        }
+    }
+}
+
+@Composable
+private fun MorePage(s: AppState, c: TreadmillController) {
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("Passadeira", fontWeight = FontWeight.Bold)
+                    Text("Estado: ${if (s.controlReady) "Ligada e pronta" else s.connection}")
+                    Text("Dispositivo: ${s.connectedName ?: "—"}")
+                    Text("Endereço: ${s.savedAddress ?: "—"}")
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(onClick = { c.autoConnect() }) { Text("Reconectar") }
+                        OutlinedButton(onClick = { c.disconnect() }) { Text("Desligar") }
                     }
+                    TextButton(onClick = { c.forgetSaved() }) { Text("Esquecer passadeira") }
+                }
+            }
+        }
+
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Diagnóstico FTMS", fontWeight = FontWeight.Bold)
+                    Text("Machine features: 0x${s.machineFeatureBits.toString(16)}")
+                    Text("Target features: 0x${s.targetFeatureBits.toString(16)}")
+                    Text("Velocidade: ${s.speedRange.min}–${s.speedRange.max} km/h · passo ${s.speedRange.step}")
+                    Text("Machine status: ${s.machineStatus}")
+                    Text("Training status: ${s.trainingStatus}")
                     Text("Última resposta: ${s.lastControlResponse}")
                 }
             }
         }
 
-        item {
-            AdvancedControls(s, c)
-        }
-    }
-}
-
-@Composable
-private fun AdvancedControls(s: AppState, c: TreadmillController) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Opções FTMS anunciadas pela passadeira", fontWeight = FontWeight.Bold)
-            if (s.targetFeatureBits == 0u) {
-                Text("A N4225 não anunciou targets avançados, ou a leitura de 0x2ACC ainda não terminou.")
-            }
-
-            if (s.targetFeatureBits.hasBit(1)) NumericControl("Inclinação (%)", s.inclineRange) {
-                it.toDoubleOrNull()?.let(c::setInclination)
-            }
-            if (s.targetFeatureBits.hasBit(2)) NumericControl("Resistência", s.resistanceRange) {
-                it.toDoubleOrNull()?.let(c::setResistance)
-            }
-            if (s.targetFeatureBits.hasBit(3)) NumericControl("Potência alvo (W)", s.powerRange) {
-                it.toIntOrNull()?.let(c::setPower)
-            }
-            if (s.targetFeatureBits.hasBit(4)) NumericControl("Frequência cardíaca alvo (bpm)", s.heartRateRange) {
-                it.toIntOrNull()?.let(c::setHeartRate)
-            }
-            if (s.targetFeatureBits.hasBit(5)) NumericControl("Energia alvo (kcal)") {
-                it.toIntOrNull()?.let(c::setEnergy)
-            }
-            if (s.targetFeatureBits.hasBit(6)) NumericControl("Passos alvo") {
-                it.toIntOrNull()?.let(c::setSteps)
-            }
-            if (s.targetFeatureBits.hasBit(7)) NumericControl("Passadas alvo") {
-                it.toIntOrNull()?.let(c::setStrides)
-            }
-            if (s.targetFeatureBits.hasBit(8)) NumericControl("Distância alvo (m)") {
-                it.toIntOrNull()?.let(c::setDistance)
-            }
-            if (s.targetFeatureBits.hasBit(9)) NumericControl("Tempo alvo (s)") {
-                it.toIntOrNull()?.let(c::setTrainingTime)
-            }
-        }
-    }
-}
-
-@Composable
-private fun NumericControl(
-    label: String,
-    range: Range3? = null,
-    onSend: (String) -> Unit,
-) {
-    var value by remember(label) { mutableStateOf("") }
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(if (range == null) label else "$label  [${range.min}…${range.max}; passo ${range.step}]")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = value,
-                onValueChange = { value = it },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                label = { Text("Valor") },
-            )
-            Button(onClick = { onSend(value) }, enabled = value.isNotBlank()) { Text("Enviar") }
-        }
-    }
-}
-
-@Composable
-private fun DataPage(s: AppState) {
-    val t = s.telemetry
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { MetricCard("Velocidade", t.speedKmh?.let { "%.2f km/h".format(Locale.US, it) } ?: "—") }
-        item { MetricCard("Velocidade média", t.averageSpeedKmh?.let { "%.2f km/h".format(Locale.US, it) } ?: "—") }
-        item { MetricCard("Distância", t.distanceKm?.let { "%.3f km".format(Locale.US, it) } ?: "—") }
-        item { MetricCard("Tempo", t.elapsedSeconds?.let(::formatTime) ?: "—") }
-        item { MetricCard("Calorias", t.calories?.let { "$it kcal" } ?: "—") }
-        item { MetricCard("FC", t.heartRate?.let { "$it bpm" } ?: "—") }
-        item { MetricCard("Inclinação", t.inclinationPercent?.let { "%.1f %%".format(Locale.US, it) } ?: "—") }
-        item { MetricCard("Elevação + / −", "${t.positiveElevationM ?: "—"} / ${t.negativeElevationM ?: "—"} m") }
-        item { MetricCard("MET", t.met?.let { "%.1f".format(Locale.US, it) } ?: "—") }
-        item { MetricCard("Potência / força", "${t.powerW ?: "—"} W / ${t.forceN ?: "—"} N") }
-        item { MetricCard("Estado", s.machineStatus) }
-        item { MetricCard("Training status", s.trainingStatus) }
-    }
-}
-
-@Composable
-private fun MetricCard(label: String, value: String) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp)) {
-            Text(label, style = MaterialTheme.typography.labelLarge)
-            Text(value, style = MaterialTheme.typography.headlineSmall)
-        }
-    }
-}
-
-@Composable
-private fun DiagnosticsPage(s: AppState) {
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("FTMS", fontWeight = FontWeight.Bold)
-                    Text("Machine features: 0x${s.machineFeatureBits.toString(16)}")
-                    Text("Target features: 0x${s.targetFeatureBits.toString(16)}")
-                    Text("Speed: ${s.speedRange}")
-                    Text("Inclination: ${s.inclineRange ?: "not advertised/read"}")
-                    Text("Resistance: ${s.resistanceRange ?: "not advertised/read"}")
-                    Text("Heart rate: ${s.heartRateRange ?: "not advertised/read"}")
-                    Text("Power: ${s.powerRange ?: "not advertised/read"}")
-                    Text("Machine status: ${s.machineStatus}")
-                    Text("Training status: ${s.trainingStatus}")
-                    Text("Last control response: ${s.lastControlResponse}")
-                }
-            }
-        }
         item { Text("Log BLE", fontWeight = FontWeight.Bold) }
         items(s.logs) { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
 }
 
-private fun UInt.hasBit(bit: Int): Boolean = (this and (1u shl bit)) != 0u
+private fun formatDate(epochMs: Long): String =
+    SimpleDateFormat("dd MMM yyyy · HH:mm", Locale("pt", "PT")).format(Date(epochMs))
 
 private fun formatTime(seconds: Int): String {
     val h = seconds / 3600
     val m = (seconds % 3600) / 60
     val s = seconds % 60
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+}
+
+private fun formatLongDuration(seconds: Int): String {
+    val h = seconds / 3600
+    val m = (seconds % 3600) / 60
+    return if (h > 0) "${h}h ${m}m" else "${m} min"
+}
+
+private fun deltaCounter(current: Int?, base: Int?): Int? {
+    current ?: return null
+    base ?: return current
+    return if (current >= base) current - base else current
+}
+
+private fun deltaCounter(current: Double?, base: Double?): Double? {
+    current ?: return null
+    base ?: return current
+    return if (current >= base) current - base else current
 }
 
 private fun parseRange16(value: ByteArray, divisor: Double): Range3? {
@@ -956,20 +1132,20 @@ private fun describeMachineStatus(value: ByteArray): String {
     val op = value[0].toInt() and 0xFF
     return when (op) {
         0x01 -> "Reset"
-        0x02 -> "Stopped / paused by user"
-        0x03 -> "Stopped by safety key"
-        0x04 -> "Started / resumed"
-        0x05 -> "Target speed changed"
-        0x06 -> "Target inclination changed"
-        0x07 -> "Target resistance changed"
-        0x08 -> "Target power changed"
-        0x09 -> "Target heart rate changed"
-        0x0A -> "Target energy changed"
-        0x0B -> "Target steps changed"
-        0x0C -> "Target strides changed"
-        0x0D -> "Target distance changed"
-        0x0E -> "Target time changed"
-        0xFF -> "Control permission lost"
+        0x02 -> "Parada / pausa"
+        0x03 -> "Parada pela chave de segurança"
+        0x04 -> "Iniciada / retomada"
+        0x05 -> "Velocidade alvo alterada"
+        0x06 -> "Inclinação alvo alterada"
+        0x07 -> "Resistência alvo alterada"
+        0x08 -> "Potência alvo alterada"
+        0x09 -> "FC alvo alterada"
+        0x0A -> "Energia alvo alterada"
+        0x0B -> "Passos alvo alterados"
+        0x0C -> "Passadas alvo alteradas"
+        0x0D -> "Distância alvo alterada"
+        0x0E -> "Tempo alvo alterado"
+        0xFF -> "Permissão de controlo perdida"
         else -> "Status 0x${op.toString(16)}"
     }
 }
@@ -977,41 +1153,31 @@ private fun describeMachineStatus(value: ByteArray): String {
 private fun describeTrainingStatus(value: ByteArray): String {
     if (value.size < 2) return "—"
     return when (val s = value[1].toInt() and 0xFF) {
-        0x00 -> "Other"
+        0x00 -> "Outro"
         0x01 -> "Idle"
-        0x02 -> "Warming up"
-        0x03 -> "Low intensity interval"
-        0x04 -> "High intensity interval"
-        0x05 -> "Recovery interval"
-        0x06 -> "Isometric"
-        0x07 -> "Heart-rate control"
-        0x08 -> "Fitness test"
-        0x09 -> "Speed below control region"
-        0x0A -> "Speed above control region"
-        0x0B -> "Cool down"
-        0x0C -> "Watt control"
-        0x0D -> "Manual mode"
-        0x0E -> "Pre-workout"
-        0x0F -> "Post-workout"
+        0x02 -> "Aquecimento"
+        0x03 -> "Intervalo baixa intensidade"
+        0x04 -> "Intervalo alta intensidade"
+        0x05 -> "Recuperação"
+        0x06 -> "Isométrico"
+        0x07 -> "Controlo por FC"
+        0x08 -> "Teste fitness"
+        0x09 -> "Velocidade abaixo da zona"
+        0x0A -> "Velocidade acima da zona"
+        0x0B -> "Retorno à calma"
+        0x0C -> "Controlo por watts"
+        0x0D -> "Modo manual"
+        0x0E -> "Pré-treino"
+        0x0F -> "Pós-treino"
         else -> "Training status 0x${s.toString(16)}"
     }
 }
 
 private fun opcodeName(op: Int): String = when (op) {
     0x00 -> "Request Control"
-    0x01 -> "Reset"
     0x02 -> "Set Target Speed"
-    0x03 -> "Set Target Inclination"
-    0x04 -> "Set Target Resistance"
-    0x05 -> "Set Target Power"
-    0x06 -> "Set Target Heart Rate"
     0x07 -> "Start / Resume"
     0x08 -> "Stop / Pause"
-    0x09 -> "Set Target Energy"
-    0x0A -> "Set Target Steps"
-    0x0B -> "Set Target Strides"
-    0x0C -> "Set Target Distance"
-    0x0D -> "Set Target Time"
     else -> "Opcode 0x${op.toString(16)}"
 }
 
