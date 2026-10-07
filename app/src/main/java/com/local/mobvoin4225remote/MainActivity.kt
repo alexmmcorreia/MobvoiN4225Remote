@@ -934,6 +934,13 @@ private fun N4225Screen(
             1 -> StrengthPage(
                 s = strength,
                 execution = execution,
+                executionRepository = strengthExecutionRepository,
+                onOpenDay = { date ->
+                    importScope.launch {
+                        strengthExecutionRepository.refresh(date)
+                        page = 0
+                    }
+                },
                 importMsb = { msbImportLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                 importFitNotes = { fitNotesImportLauncher.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
             )
@@ -1138,6 +1145,24 @@ private fun TodayStrengthPage(
             }
         }
 
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("Últimos 30 dias", fontWeight = FontWeight.Bold)
+                    Text(
+                        "${execution.analytics.trainingDays30} dias · ${execution.analytics.sets30} séries · " +
+                            "%.0f kg de volume".format(Locale.US, execution.analytics.tonnage30)
+                    )
+                    if (execution.analytics.pendingSyncSets > 0) {
+                        Text(
+                            "${execution.analytics.pendingSyncSets} séries locais pendentes de sincronização MSB",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        }
+
         if (restEndMs != null) {
             item {
                 Card(Modifier.fillMaxWidth()) {
@@ -1222,6 +1247,15 @@ private fun StrengthExerciseCard(
                 )
             } else {
                 Text("Descanso: ${formatTime(exercise.restSeconds)}", style = MaterialTheme.typography.bodySmall)
+            }
+            exercise.lastPerformance?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall)
+            }
+            exercise.bestRecentE1rm?.let {
+                Text(
+                    "Melhor e1RM recente: %.1f kg".format(Locale.US, it),
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
 
             if (nextIncomplete != null) {
@@ -1373,9 +1407,12 @@ private fun estimateE1rm(weight: Double?, reps: Int?, rpe: Double?): Double? {
 private fun StrengthPage(
     s: StrengthDataState,
     execution: StrengthExecutionState,
+    executionRepository: StrengthExecutionRepository,
+    onOpenDay: (String) -> Unit,
     importMsb: () -> Unit,
     importFitNotes: () -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             Card(Modifier.fillMaxWidth()) {
@@ -1418,11 +1455,33 @@ private fun StrengthPage(
                     Text("${execution.autoMappedCount} exercícios ligados automaticamente com ≥95% de confiança")
                     if (execution.reviewMappings.isNotEmpty()) {
                         Text("${execution.reviewMappings.size} candidatos por confirmar", style = MaterialTheme.typography.bodyMedium)
-                        execution.reviewMappings.take(5).forEach { candidate ->
-                            Text(
-                                "${candidate.msbName} → ${candidate.fitNotesName ?: "sem candidato"} (${(candidate.confidence * 100).toInt()}%)",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
+                        execution.reviewMappings.take(8).forEach { candidate ->
+                            Card(Modifier.fillMaxWidth()) {
+                                Column(
+                                    Modifier.padding(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Text(candidate.msbName, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        "Sugestão: ${candidate.fitNotesName ?: "sem candidato"} · ${(candidate.confidence * 100).toInt()}%",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    if (candidate.fitNotesName != null) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            TextButton(onClick = {
+                                                scope.launch {
+                                                    executionRepository.acceptSuggestedMapping(candidate.msbName)
+                                                }
+                                            }) { Text("Confirmar") }
+                                            TextButton(onClick = {
+                                                scope.launch {
+                                                    executionRepository.rejectSuggestedMapping(candidate.msbName)
+                                                }
+                                            }) { Text("Não corresponde") }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1438,15 +1497,15 @@ private fun StrengthPage(
                 Text("Importa primeiro o msb_capture.json e o backup .fitnotes/.zip.")
             }
         } else {
-            items(s.days.take(90), key = { it.date }) { day ->
-                StrengthDayCard(day)
+            items(s.days.take(120), key = { it.date }) { day ->
+                StrengthDayCard(day, onOpenDay)
             }
         }
     }
 }
 
 @Composable
-private fun StrengthDayCard(day: StrengthDaySummary) {
+private fun StrengthDayCard(day: StrengthDaySummary, onOpen: (String) -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(day.date, fontWeight = FontWeight.Bold)
@@ -1469,6 +1528,9 @@ private fun StrengthDayCard(day: StrengthDaySummary) {
                     day.exerciseNames.take(6).joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
                 )
+            }
+            if (day.hasPlan) {
+                TextButton(onClick = { onOpen(day.date) }) { Text("Abrir treino") }
             }
         }
     }
