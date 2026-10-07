@@ -7,6 +7,8 @@ import android.database.sqlite.SQLiteOpenHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.time.LocalDate
 import java.util.Locale
@@ -185,6 +187,69 @@ class StrengthExecutionRepository(context: Context) {
         }
         db.writableDatabase.update("exercise_map", values, "msb_normalized=?", arrayOf(norm))
         refreshSync(state.value.selectedDate, "Correspondência rejeitada")
+    }
+
+    suspend fun exportPendingSync(): File = withContext(Dispatchers.IO) {
+        val dir = File(appContext.filesDir, "exports").apply { mkdirs() }
+        val file = File(dir, "msb_pending_sync_${System.currentTimeMillis()}.json")
+        val arr = JSONArray()
+        // Resolve plan metadata from the imported database separately.
+        val imported = if (importedDbFile.exists()) {
+            SQLiteDatabase.openDatabase(importedDbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+        } else null
+        try {
+            db.readableDatabase.rawQuery(
+                """
+                SELECT set_key,source_exercise_id,group_index,set_index,
+                       weight,reps,rpe,comment,video_uri,completed_at
+                FROM local_set
+                WHERE completed_at IS NOT NULL AND sync_state='pending'
+                ORDER BY completed_at
+                """.trimIndent(),
+                null,
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val sourceId = cursor.getString(1)
+                    var date: String? = null
+                    var exercise: String? = null
+                    imported?.rawQuery(
+                        "SELECT date,display_name FROM planned_exercise WHERE source_id=?",
+                        arrayOf(sourceId),
+                    )?.use { pc ->
+                        if (pc.moveToFirst()) {
+                            date = pc.getString(0)
+                            exercise = pc.getString(1)
+                        }
+                    }
+                    arr.put(
+                        JSONObject().apply {
+                            put("setKey", cursor.getString(0))
+                            put("sourceExerciseId", sourceId)
+                            put("groupIndex", cursor.getInt(2))
+                            put("setIndex", cursor.getInt(3))
+                            putNullableJson("weight", if (cursor.isNull(4)) null else cursor.getDouble(4))
+                            putNullableJson("reps", if (cursor.isNull(5)) null else cursor.getInt(5))
+                            putNullableJson("rpe", if (cursor.isNull(6)) null else cursor.getDouble(6))
+                            putNullableJson("comment", if (cursor.isNull(7)) null else cursor.getString(7))
+                            putNullableJson("videoUri", if (cursor.isNull(8)) null else cursor.getString(8))
+                            put("completedAt", cursor.getLong(9))
+                            putNullableJson("date", date)
+                            putNullableJson("exercise", exercise)
+                        }
+                    )
+                }
+            }
+        } finally {
+            imported?.close()
+        }
+        val root = JSONObject().apply {
+            put("schemaVersion", 1)
+            put("createdAt", System.currentTimeMillis())
+            put("source", "Training Hub")
+            put("sets", arr)
+        }
+        file.writeText(root.toString(2))
+        file
     }
 
     private fun refreshSync(date: String, message: String? = null) {
@@ -714,3 +779,8 @@ private fun ContentValues.putNullable(key: String, value: String?) {
 private fun formatCompact(value: Double): String =
     if (value % 1.0 == 0.0) value.toInt().toString()
     else "%.1f".format(Locale.US, value)
+
+
+private fun JSONObject.putNullableJson(key: String, value: Any?) {
+    if (value == null) put(key, JSONObject.NULL) else put(key, value)
+}
