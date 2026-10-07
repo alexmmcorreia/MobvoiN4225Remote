@@ -1209,6 +1209,14 @@ private fun TodayStrengthPage(
                             fontWeight = FontWeight.Bold,
                         )
                         Text("${workout.completedSets}/${workout.totalSets} séries concluídas")
+                        val planBits = buildList {
+                            workout.program?.let { add("Programa $it") }
+                            workout.week?.let { add("Semana $it") }
+                            workout.session?.let { add("Sessão $it") }
+                        }
+                        if (planBits.isNotEmpty()) {
+                            Text(planBits.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+                        }
                         Text("FC: ${watch.heartRateBpm?.let { "$it bpm" } ?: "—"}")
                         execution.lastMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     }
@@ -1272,6 +1280,7 @@ private fun StrengthExerciseCard(
                 StrengthSetRow(
                     number = index + 1,
                     set = set,
+                    historicalBestE1rm = exercise.bestRecentE1rm,
                     repository = repository,
                     onRest = onRest,
                 )
@@ -1284,6 +1293,7 @@ private fun StrengthExerciseCard(
 private fun StrengthSetRow(
     number: Int,
     set: WorkoutSetPlan,
+    historicalBestE1rm: Double?,
     repository: StrengthExecutionRepository,
     onRest: (Int) -> Unit,
 ) {
@@ -1381,6 +1391,26 @@ private fun StrengthSetRow(
                 val e1rm = estimateE1rm(set.actualLoad, set.actualReps, set.actualRpe)
                 if (e1rm != null) {
                     Text("e1RM estimado: %.1f kg".format(Locale.US, e1rm))
+                    if (historicalBestE1rm != null && e1rm > historicalBestE1rm + 0.1) {
+                        Text("NOVO PR de e1RM", fontWeight = FontWeight.Bold)
+                    }
+                }
+                val deltas = buildList {
+                    if (set.actualLoad != null && set.prescribedLoad != null) {
+                        val d = set.actualLoad - set.prescribedLoad
+                        if (kotlin.math.abs(d) >= 0.01) add("carga %+.1f kg".format(Locale.US, d))
+                    }
+                    if (set.actualReps != null && set.prescribedReps != null) {
+                        val d = set.actualReps - set.prescribedReps
+                        if (d != 0) add("reps %+d".format(d))
+                    }
+                    if (set.actualRpe != null && set.prescribedRpe != null) {
+                        val d = set.actualRpe - set.prescribedRpe
+                        if (kotlin.math.abs(d) >= 0.01) add("RPE %+.1f".format(Locale.US, d))
+                    }
+                }
+                if (deltas.isNotEmpty()) {
+                    Text("Vs prescrito: ${deltas.joinToString(" · ")}", style = MaterialTheme.typography.bodySmall)
                 }
                 TextButton(onClick = { scope.launch { repository.undoSet(set.key) } }) {
                     Text("Desfazer")
