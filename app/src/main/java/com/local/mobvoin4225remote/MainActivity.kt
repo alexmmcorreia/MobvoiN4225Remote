@@ -140,19 +140,22 @@ data class AppState(
 class MainActivity : ComponentActivity() {
     private lateinit var controller: TreadmillController
     private lateinit var healthConnect: HealthConnectBridge
+    private lateinit var heartRateMonitor: HeartRateMonitor
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         controller = TreadmillController(this)
         healthConnect = HealthConnectBridge(this)
+        heartRateMonitor = HeartRateMonitor(this)
         setContent {
             MaterialTheme {
-                N4225Screen(controller, healthConnect)
+                N4225Screen(controller, healthConnect, heartRateMonitor)
             }
         }
     }
 
     override fun onDestroy() {
+        heartRateMonitor.close()
         controller.close()
         super.onDestroy()
     }
@@ -636,6 +639,29 @@ class TreadmillController(private val context: Context) {
         state.update { it.copy(history = updated) }
     }
 
+    fun updateExternalHeartRate(bpm: Int?) {
+        bpm ?: return
+        if (bpm !in 20..250) return
+
+        val live = state.value.liveSession
+        state.update { it.copy(telemetry = it.telemetry.copy(heartRate = bpm)) }
+
+        if (!live.active || live.paused) return
+
+        hrSum += bpm
+        hrSamples += 1
+        hrMax = max(hrMax ?: bpm, bpm)
+
+        state.update {
+            it.copy(
+                liveSession = it.liveSession.copy(
+                    averageHeartRateBpm = (hrSum / hrSamples).toInt(),
+                    maxHeartRateBpm = hrMax,
+                )
+            )
+        }
+    }
+
     private fun beginSession() {
         if (state.value.liveSession.active) return
         val t = state.value.telemetry
@@ -662,7 +688,7 @@ class TreadmillController(private val context: Context) {
 
     private fun updateSessionFromTelemetry(t: Telemetry) {
         val live = state.value.liveSession
-        if (!live.active) return
+        if (!live.active || live.paused) return
 
         val duration = deltaCounter(t.elapsedSeconds, sessionBaseElapsed)
             ?: ((System.currentTimeMillis() - (live.startedAtMs ?: System.currentTimeMillis())) / 1000L).toInt()
@@ -750,8 +776,13 @@ class TreadmillController(private val context: Context) {
 }
 
 @Composable
-private fun N4225Screen(controller: TreadmillController, healthConnect: HealthConnectBridge) {
+private fun N4225Screen(
+    controller: TreadmillController,
+    healthConnect: HealthConnectBridge,
+    heartRateMonitor: HeartRateMonitor,
+) {
     val state by controller.state.collectAsState()
+    val watch by heartRateMonitor.state.collectAsState()
     var page by remember { mutableIntStateOf(0) }
     var showStartConfirm by remember { mutableStateOf(false) }
     var healthAvailable by remember { mutableStateOf(false) }
@@ -761,7 +792,10 @@ private fun N4225Screen(controller: TreadmillController, healthConnect: HealthCo
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
-        if (controller.hasPermissions()) controller.autoConnect()
+        if (controller.hasPermissions()) {
+            controller.autoConnect()
+            if (watch.savedAddress != null) heartRateMonitor.autoConnect()
+        }
     }
 
     val healthPermissionLauncher = rememberLauncherForActivityResult(
@@ -776,9 +810,14 @@ private fun N4225Screen(controller: TreadmillController, healthConnect: HealthCo
             permissionLauncher.launch(controller.requiredPermissions())
         } else {
             controller.autoConnect()
+            if (watch.savedAddress != null) heartRateMonitor.autoConnect()
         }
         healthAvailable = healthConnect.isAvailable()
         healthGranted = if (healthAvailable) healthConnect.hasPermissions() else false
+    }
+
+    LaunchedEffect(watch.heartRateBpm) {
+        controller.updateExternalHeartRate(watch.heartRateBpm)
     }
 
     Column(
@@ -814,7 +853,7 @@ private fun N4225Screen(controller: TreadmillController, healthConnect: HealthCo
         }
 
         when (page) {
-            0 -> WorkoutPage(state, controller) { showStartConfirm = true }
+            0 -> WorkoutPage(state, watch, controller) { showStartConfirm = true }
             1 -> HistoryPage(
                 s = state,
                 c = controller,
@@ -827,7 +866,9 @@ private fun N4225Screen(controller: TreadmillController, healthConnect: HealthCo
             )
             else -> MorePage(
                 s = state,
+                watch = watch,
                 c = controller,
+                heartRateMonitor = heartRateMonitor,
                 healthAvailable = healthAvailable,
                 healthGranted = healthGranted,
                 requestHealthPermissions = { healthPermissionLauncher.launch(healthConnect.permissions) },
@@ -864,7 +905,12 @@ private fun NavButton(label: String, selected: Boolean, modifier: Modifier = Mod
 }
 
 @Composable
-private fun WorkoutPage(s: AppState, c: TreadmillController, startWithConfirm: () -> Unit) {
+private fun WorkoutPage(
+    s: AppState,
+    watch: HeartRateState,
+    c: TreadmillController,
+    startWithConfirm: () -> Unit,
+) {
     val live = s.liveSession
     val actualSpeed = s.telemetry.speedKmh ?: 0.0
 
@@ -879,6 +925,14 @@ private fun WorkoutPage(s: AppState, c: TreadmillController, startWithConfirm: (
                         fontWeight = FontWeight.Bold,
                     )
                     Text("Alvo: %.1f km/h".format(Locale.US, s.targetSpeed))
+                    Text(
+                        when {
+                            watch.heartRateBpm != null -> "Relógio: ${watch.heartRateBpm} bpm"
+                            watch.connectedAddress != null -> "Relógio ligado · à espera de FC"
+                            else -> "Relógio não ligado"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Button(
                             onClick = { c.changeSpeed(-s.speedRange.step) },
@@ -913,7 +967,7 @@ private fun WorkoutPage(s: AppState, c: TreadmillController, startWithConfirm: (
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SmallMetric("Tempo", formatTime(live.durationSec), Modifier.weight(1f))
                 SmallMetric("Distância", "%.2f km".format(Locale.US, live.distanceKm), Modifier.weight(1f))
-                SmallMetric("Kcal", live.caloriesKcal?.toString() ?: "—", Modifier.weight(1f))
+                SmallMetric("FC", watch.heartRateBpm?.let { "$it bpm" } ?: "—", Modifier.weight(1f))
             }
         }
 
@@ -953,7 +1007,9 @@ private fun WorkoutPage(s: AppState, c: TreadmillController, startWithConfirm: (
                     Text("Sessão", fontWeight = FontWeight.Bold)
                     Text("Média: %.1f km/h".format(Locale.US, live.averageSpeedKmh))
                     Text("Máxima: %.1f km/h".format(Locale.US, live.maxSpeedKmh))
+                    Text("Calorias: ${live.caloriesKcal?.let { "$it kcal" } ?: "—"}")
                     Text("FC média: ${live.averageHeartRateBpm?.let { "$it bpm" } ?: "—"}")
+                    Text("FC máxima: ${live.maxHeartRateBpm?.let { "$it bpm" } ?: "—"}")
                     if (!live.active) {
                         Text("Ao carregar START, a sessão começa a ser gravada automaticamente.")
                     }
@@ -1067,13 +1123,42 @@ private fun SessionCard(session: WorkoutSession, onDelete: () -> Unit, onExport:
 @Composable
 private fun MorePage(
     s: AppState,
+    watch: HeartRateState,
     c: TreadmillController,
+    heartRateMonitor: HeartRateMonitor,
     healthAvailable: Boolean,
     healthGranted: Boolean,
     requestHealthPermissions: () -> Unit,
     healthMessage: String?,
 ) {
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("Relógio / frequência cardíaca", fontWeight = FontWeight.Bold)
+                    Text("Estado: ${watch.status}")
+                    Text("Dispositivo: ${watch.connectedName ?: watch.candidateName ?: "—"}")
+                    Text("FC: ${watch.heartRateBpm?.let { "$it bpm" } ?: "—"}")
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Button(onClick = { heartRateMonitor.startScan() }) {
+                            Text(if (watch.scanning) "A procurar…" else "Procurar relógio")
+                        }
+                        if (watch.savedAddress != null) {
+                            OutlinedButton(onClick = { heartRateMonitor.forget() }) {
+                                Text("Esquecer")
+                            }
+                        }
+                    }
+                    if (watch.savedAddress == null) {
+                        Text(
+                            "A app procura dispositivos que emitam o serviço Bluetooth padrão de frequência cardíaca (0x180D).",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        }
+
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
