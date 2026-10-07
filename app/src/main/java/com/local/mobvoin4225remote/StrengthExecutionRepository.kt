@@ -77,6 +77,7 @@ data class StrengthExecutionState(
     val autoMappedCount: Int = 0,
     val reviewMappings: List<MappingCandidate> = emptyList(),
     val analytics: StrengthAnalytics = StrengthAnalytics(),
+    val knownExercises: List<String> = emptyList(),
     val lastMessage: String? = null,
     val busy: Boolean = false,
 )
@@ -376,6 +377,7 @@ class StrengthExecutionRepository(context: Context) {
                 autoMappedCount = mappings.first,
                 reviewMappings = mappings.second,
                 analytics = loadAnalytics(imported),
+                knownExercises = loadKnownExercises(imported),
                 lastMessage = message,
                 busy = false,
             )
@@ -848,6 +850,21 @@ class StrengthExecutionRepository(context: Context) {
             }
         }
         return "Última vez ($lastDate): $setText" to best
+    }
+
+    private fun loadKnownExercises(imported: SQLiteDatabase): List<String> {
+        val names = mutableListOf<String>()
+        imported.rawQuery(
+            """
+            SELECT name
+            FROM fit_exercise
+            ORDER BY favourite DESC,name COLLATE NOCASE
+            """.trimIndent(),
+            null,
+        ).use { cursor ->
+            while (cursor.moveToNext()) names += cursor.getString(0)
+        }
+        return names.distinct()
     }
 
     private fun loadAnalytics(imported: SQLiteDatabase): StrengthAnalytics {
