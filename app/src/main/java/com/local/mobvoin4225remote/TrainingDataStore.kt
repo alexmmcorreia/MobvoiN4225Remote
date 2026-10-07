@@ -79,6 +79,7 @@ class TrainingRepository(context: Context) {
             days = mergeLocalDays(store.loadDays()),
             busy = false,
         )
+    }
 
     private fun mergeLocalDays(base: List<StrengthDaySummary>): List<StrengthDaySummary> {
         val executionFile = appContext.getDatabasePath("strength_execution.db")
@@ -159,7 +160,6 @@ class TrainingRepository(context: Context) {
             execution.close()
         }
         return byDate.values.sortedByDescending { it.date }
-    }
     }
 }
 
