@@ -4,7 +4,10 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -45,7 +48,12 @@ data class StrengthDataState(
 class TrainingRepository(context: Context) {
     private val appContext = context.applicationContext
     private val store = TrainingDataStore(appContext)
-    val state = MutableStateFlow(loadState())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val state = MutableStateFlow(StrengthDataState())
+
+    init {
+        scope.launch { state.value = loadState() }
+    }
 
     suspend fun importMsb(input: InputStream) = withContext(Dispatchers.IO) {
         state.value = state.value.copy(busy = true, lastMessage = "A importar MyStrengthBook…")
