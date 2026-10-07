@@ -16,6 +16,7 @@ data class WorkoutSession(
     val caloriesKcal: Int?,
     val averageHeartRateBpm: Int?,
     val maxHeartRateBpm: Int?,
+    val healthConnectExported: Boolean = false,
 )
 
 class SessionStore(context: Context) {
@@ -39,6 +40,7 @@ class SessionStore(context: Context) {
                         caloriesKcal = o.optIntOrNull("caloriesKcal"),
                         averageHeartRateBpm = o.optIntOrNull("averageHeartRateBpm"),
                         maxHeartRateBpm = o.optIntOrNull("maxHeartRateBpm"),
+                        healthConnectExported = o.optBoolean("healthConnectExported", false),
                     )
                 )
             }
@@ -60,6 +62,7 @@ class SessionStore(context: Context) {
                     putNullable("caloriesKcal", s.caloriesKcal)
                     putNullable("averageHeartRateBpm", s.averageHeartRateBpm)
                     putNullable("maxHeartRateBpm", s.maxHeartRateBpm)
+                    put("healthConnectExported", s.healthConnectExported)
                 }
             )
         }
