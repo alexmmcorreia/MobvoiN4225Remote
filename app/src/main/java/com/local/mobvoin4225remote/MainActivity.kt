@@ -894,11 +894,11 @@ private fun N4225Screen(
             Column {
                 Text("Training Hub", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                 Text(
-                    when {
-                        execution.workout != null -> "Treino de força · ${execution.workout.completedSets}/${execution.workout.totalSets} séries"
-                        watch.heartRateBpm != null -> "Relógio · ${watch.heartRateBpm} bpm"
-                        else -> "Treino, cardio e histórico"
-                    },
+                    execution.workout?.let { workout ->
+                        "Treino de força · ${workout.completedSets}/${workout.totalSets} séries"
+                    } ?: watch.heartRateBpm?.let { bpm ->
+                        "Relógio · $bpm bpm"
+                    } ?: "Treino, cardio e histórico",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
