@@ -855,6 +855,25 @@ private fun N4225Screen(
         pendingVideoUri = null
     }
 
+    var pendingChosenVideoSet by remember { mutableStateOf<WorkoutSetPlan?>(null) }
+    val chooseVideoLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val set = pendingChosenVideoSet
+        if (uri != null && set != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+            importScope.launch {
+                strengthExecutionRepository.attachVideo(set, uri.toString())
+            }
+        }
+        pendingChosenVideoSet = null
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
@@ -932,6 +951,10 @@ private fun N4225Screen(
                     pendingVideoSet = set
                     pendingVideoUri = uri
                     videoLauncher.launch(uri)
+                },
+                onChooseVideo = { set ->
+                    pendingChosenVideoSet = set
+                    chooseVideoLauncher.launch(arrayOf("video/*"))
                 },
             )
             1 -> StrengthPage(
@@ -1121,6 +1144,7 @@ private fun TodayStrengthPage(
     watch: HeartRateState,
     repository: StrengthExecutionRepository,
     onFilmSet: (WorkoutSetPlan) -> Unit,
+    onChooseVideo: (WorkoutSetPlan) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
@@ -1234,6 +1258,7 @@ private fun TodayStrengthPage(
                         restEndMs = System.currentTimeMillis() + seconds * 1000L
                     },
                     onFilmSet = onFilmSet,
+                    onChooseVideo = onChooseVideo,
                 )
             }
         }
@@ -1246,6 +1271,7 @@ private fun StrengthExerciseCard(
     repository: StrengthExecutionRepository,
     onRest: (Int) -> Unit,
     onFilmSet: (WorkoutSetPlan) -> Unit,
+    onChooseVideo: (WorkoutSetPlan) -> Unit,
 ) {
     val nextIncomplete = exercise.sets.firstOrNull { !it.completed }
 
@@ -1274,8 +1300,13 @@ private fun StrengthExerciseCard(
             }
 
             if (nextIncomplete != null) {
-                OutlinedButton(onClick = { onFilmSet(nextIncomplete) }) {
-                    Text(if (nextIncomplete.videoUri != null) "Vídeo preparado ✓" else "Filmar próxima série")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(onClick = { onFilmSet(nextIncomplete) }) {
+                        Text(if (nextIncomplete.videoUri != null) "Filmar de novo" else "Filmar próxima")
+                    }
+                    OutlinedButton(onClick = { onChooseVideo(nextIncomplete) }) {
+                        Text("Escolher vídeo")
+                    }
                 }
             }
 
