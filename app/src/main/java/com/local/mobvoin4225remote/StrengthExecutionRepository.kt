@@ -40,6 +40,7 @@ data class WorkoutExercisePlan(
     val mappingConfidence: Double?,
     val lastPerformance: String?,
     val bestRecentE1rm: Double?,
+    val isFree: Boolean = false,
     val sets: List<WorkoutSetPlan>,
 )
 
@@ -129,7 +130,7 @@ class StrengthExecutionRepository(context: Context) {
             putNullable("comment", comment?.takeIf { it.isNotBlank() })
             putNullable("video_uri", existing?.videoUri)
             put("completed_at", System.currentTimeMillis())
-            put("sync_state", "pending")
+            put("sync_state", if (set.sourceExerciseId.startsWith("free:")) "local_only" else "pending")
         }
         db.writableDatabase.insertWithOnConflict(
             "local_set",
@@ -187,6 +188,94 @@ class StrengthExecutionRepository(context: Context) {
         }
         db.writableDatabase.update("exercise_map", values, "msb_normalized=?", arrayOf(norm))
         refreshSync(state.value.selectedDate, "Correspondência rejeitada")
+    }
+
+    suspend fun addFreeExercise(
+        name: String,
+        setCount: Int = 3,
+    ) = withContext(Dispatchers.IO) {
+        val clean = name.trim()
+        if (clean.isBlank()) return@withContext
+        val date = state.value.selectedDate
+        var rest = 180
+        var fitId: Int? = null
+        if (importedDbFile.exists()) {
+            val imported = SQLiteDatabase.openDatabase(importedDbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+            try {
+                val norm = normalizeExerciseName(clean)
+                imported.rawQuery(
+                    "SELECT source_id,name,default_rest_time FROM fit_exercise",
+                    null,
+                ).use { cursor ->
+                    var bestScore = 0.0
+                    while (cursor.moveToNext()) {
+                        val candidateName = cursor.getString(1)
+                        val score = nameSimilarity(norm, normalizeExerciseName(candidateName))
+                        if (score > bestScore) {
+                            bestScore = score
+                            if (score >= 0.80) {
+                                fitId = cursor.getInt(0)
+                                if (!cursor.isNull(2)) rest = cursor.getInt(2)
+                            }
+                        }
+                    }
+                }
+            } finally {
+                imported.close()
+            }
+        }
+
+        val order = db.readableDatabase.rawQuery(
+            "SELECT COALESCE(MAX(order_index),-1)+1 FROM free_exercise WHERE date=?",
+            arrayOf(date),
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+
+        val values = ContentValues().apply {
+            put("date", date)
+            put("name", clean)
+            putNullable("fit_exercise_id", fitId)
+            put("rest_seconds", rest)
+            put("order_index", order)
+        }
+        val id = db.writableDatabase.insert("free_exercise", null, values)
+        if (id > 0) {
+            repeat(setCount.coerceIn(1, 10)) { index ->
+                val sv = ContentValues().apply {
+                    put("free_exercise_id", id)
+                    put("set_index", index)
+                }
+                db.writableDatabase.insert("free_set_plan", null, sv)
+            }
+        }
+        refreshSync(date, "Exercício livre adicionado")
+    }
+
+    suspend fun addFreeSet(sourceExerciseId: String) = withContext(Dispatchers.IO) {
+        val id = sourceExerciseId.removePrefix("free:").toLongOrNull() ?: return@withContext
+        val next = db.readableDatabase.rawQuery(
+            "SELECT COALESCE(MAX(set_index),-1)+1 FROM free_set_plan WHERE free_exercise_id=?",
+            arrayOf(id.toString()),
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+        val values = ContentValues().apply {
+            put("free_exercise_id", id)
+            put("set_index", next)
+        }
+        db.writableDatabase.insert("free_set_plan", null, values)
+        refreshSync(state.value.selectedDate, "Série adicionada")
+    }
+
+    suspend fun deleteFreeExercise(sourceExerciseId: String) = withContext(Dispatchers.IO) {
+        val id = sourceExerciseId.removePrefix("free:").toLongOrNull() ?: return@withContext
+        db.writableDatabase.beginTransaction()
+        try {
+            db.writableDatabase.delete("local_set", "source_exercise_id=?", arrayOf(sourceExerciseId))
+            db.writableDatabase.delete("free_set_plan", "free_exercise_id=?", arrayOf(id.toString()))
+            db.writableDatabase.delete("free_exercise", "id=?", arrayOf(id.toString()))
+            db.writableDatabase.setTransactionSuccessful()
+        } finally {
+            db.writableDatabase.endTransaction()
+        }
+        refreshSync(state.value.selectedDate, "Exercício livre removido")
     }
 
     suspend fun exportPendingSync(): File = withContext(Dispatchers.IO) {
@@ -378,6 +467,77 @@ class StrengthExecutionRepository(context: Context) {
                 )
             }
         }
+        db.readableDatabase.rawQuery(
+            """
+            SELECT id,name,fit_exercise_id,rest_seconds
+            FROM free_exercise
+            WHERE date=?
+            ORDER BY order_index
+            """.trimIndent(),
+            arrayOf(date),
+        ).use { fc ->
+            while (fc.moveToNext()) {
+                val freeId = fc.getLong(0)
+                val name = fc.getString(1)
+                val sourceId = "free:$freeId"
+                val fitId = if (fc.isNull(2)) null else fc.getInt(2)
+                val rest = fc.getInt(3)
+                var fitName: String? = null
+                if (fitId != null) {
+                    imported.rawQuery(
+                        "SELECT name FROM fit_exercise WHERE source_id=?",
+                        arrayOf(fitId.toString()),
+                    ).use { nc -> if (nc.moveToFirst()) fitName = nc.getString(0) }
+                }
+                val recent = fitName?.let { loadRecentPerformance(imported, it, date) }
+                val sets = mutableListOf<WorkoutSetPlan>()
+                db.readableDatabase.rawQuery(
+                    """
+                    SELECT id,set_index,load,reps,rpe
+                    FROM free_set_plan
+                    WHERE free_exercise_id=?
+                    ORDER BY set_index
+                    """.trimIndent(),
+                    arrayOf(freeId.toString()),
+                ).use { sc ->
+                    while (sc.moveToNext()) {
+                        val planId = sc.getLong(0)
+                        val setIndex = sc.getInt(1)
+                        val key = "free:$freeId:set:$planId"
+                        val local = loadLocalSet(key)
+                        sets += WorkoutSetPlan(
+                            key = key,
+                            sourceExerciseId = sourceId,
+                            groupIndex = 0,
+                            setIndex = setIndex,
+                            prescribedLoad = if (sc.isNull(2)) null else sc.getDouble(2),
+                            prescribedReps = if (sc.isNull(3)) null else sc.getInt(3),
+                            prescribedRpe = if (sc.isNull(4)) null else sc.getDouble(4),
+                            actualLoad = local?.weight,
+                            actualReps = local?.reps,
+                            actualRpe = local?.rpe,
+                            completed = local?.completedAt != null,
+                            comment = local?.comment,
+                            videoUri = local?.videoUri,
+                        )
+                    }
+                }
+                exercises += WorkoutExercisePlan(
+                    sourceId = sourceId,
+                    name = name,
+                    notes = null,
+                    instructions = null,
+                    restSeconds = rest,
+                    mappedFitNotesName = fitName,
+                    mappingConfidence = if (fitName != null) 1.0 else null,
+                    lastPerformance = recent?.first,
+                    bestRecentE1rm = recent?.second,
+                    isFree = true,
+                    sets = sets,
+                )
+            }
+        }
+
         return if (exercises.isEmpty()) null else WorkoutDayPlan(
             date = date,
             program = program,
@@ -389,6 +549,13 @@ class StrengthExecutionRepository(context: Context) {
     }
 
     private fun restSecondsForExercise(sourceExerciseId: String): Int {
+        if (sourceExerciseId.startsWith("free:")) {
+            val id = sourceExerciseId.removePrefix("free:").toLongOrNull() ?: return 180
+            return db.readableDatabase.rawQuery(
+                "SELECT rest_seconds FROM free_exercise WHERE id=?",
+                arrayOf(id.toString()),
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 180 }
+        }
         if (!importedDbFile.exists()) return 180
         val imported = SQLiteDatabase.openDatabase(
             importedDbFile.absolutePath,
@@ -668,7 +835,7 @@ class StrengthExecutionRepository(context: Context) {
 }
 
 private class ExecutionDb(context: Context) :
-    SQLiteOpenHelper(context, "strength_execution.db", null, 1) {
+    SQLiteOpenHelper(context, "strength_execution.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -700,9 +867,39 @@ private class ExecutionDb(context: Context) :
             )
             """.trimIndent()
         )
+        createFreeTables(db)
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) createFreeTables(db)
+    }
+
+    private fun createFreeTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS free_exercise(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                name TEXT NOT NULL,
+                fit_exercise_id INTEGER,
+                rest_seconds INTEGER NOT NULL DEFAULT 180,
+                order_index INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS free_set_plan(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                free_exercise_id INTEGER NOT NULL,
+                set_index INTEGER NOT NULL,
+                load REAL,
+                reps INTEGER,
+                rpe REAL
+            )
+            """.trimIndent()
+        )
+    }
 }
 
 private fun normalizeExerciseName(input: String): String {
