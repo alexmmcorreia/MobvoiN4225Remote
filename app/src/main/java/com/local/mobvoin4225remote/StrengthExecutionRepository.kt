@@ -627,21 +627,21 @@ private fun normalizeExerciseName(input: String): String {
         .trim()
 
     val replacements = listOf(
-        Regex("""\\bdl\\b""") to "deadlift",
-        Regex("""\\bdead lift\\b""") to "deadlift",
-        Regex("""\\bcomp\\b""") to "competition",
-        Regex("""\\bpause\\b""") to "paused",
-        Regex("""\\bhb\\b""") to "high bar",
-        Regex("""\\blb\\b""") to "low bar",
-        Regex("""\\boh\\b""") to "overhead",
-        Regex("""\\btriceps\\b""") to "tricep",
-        Regex("""\\bextensions\\b""") to "extension",
-        Regex("""\\brows\\b""") to "row",
-        Regex("""\\bcurls\\b""") to "curl",
+        Regex("""\bdl\b""") to "deadlift",
+        Regex("""\bdead lift\b""") to "deadlift",
+        Regex("""\bcomp\b""") to "competition",
+        Regex("""\bpause\b""") to "paused",
+        Regex("""\bhb\b""") to "high bar",
+        Regex("""\blb\b""") to "low bar",
+        Regex("""\boh\b""") to "overhead",
+        Regex("""\btriceps\b""") to "tricep",
+        Regex("""\bextensions\b""") to "extension",
+        Regex("""\brows\b""") to "row",
+        Regex("""\bcurls\b""") to "curl",
     )
     for ((regex, value) in replacements) s = s.replace(regex, value)
 
-    return s.split(Regex("""\\s+"""))
+    return s.split(Regex("""\s+"""))
         .filter { it.isNotBlank() }
         .joinToString(" ")
 }
