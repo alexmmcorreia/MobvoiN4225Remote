@@ -48,12 +48,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.health.connect.client.PermissionController
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.update
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -137,13 +140,15 @@ data class AppState(
 
 class MainActivity : ComponentActivity() {
     private lateinit var controller: TreadmillController
+    private lateinit var healthConnect: HealthConnectBridge
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         controller = TreadmillController(this)
+        healthConnect = HealthConnectBridge(this)
         setContent {
             MaterialTheme {
-                N4225Screen(controller)
+                N4225Screen(controller, healthConnect)
             }
         }
     }
@@ -624,6 +629,14 @@ class TreadmillController(private val context: Context) {
         state.update { it.copy(history = updated) }
     }
 
+    fun markHealthExported(id: Long) {
+        val updated = state.value.history.map {
+            if (it.id == id) it.copy(healthConnectExported = true) else it
+        }
+        sessionStore.save(updated)
+        state.update { it.copy(history = updated) }
+    }
+
     private fun beginSession() {
         if (state.value.liveSession.active) return
         val t = state.value.telemetry
@@ -700,6 +713,7 @@ class TreadmillController(private val context: Context) {
                 caloriesKcal = live.caloriesKcal,
                 averageHeartRateBpm = live.averageHeartRateBpm,
                 maxHeartRateBpm = live.maxHeartRateBpm,
+                healthConnectExported = false,
             )
             val updated = (listOf(session) + state.value.history).distinctBy { it.id }.sortedByDescending { it.startedAtMs }
             sessionStore.save(updated)
@@ -737,15 +751,25 @@ class TreadmillController(private val context: Context) {
 }
 
 @Composable
-private fun N4225Screen(controller: TreadmillController) {
+private fun N4225Screen(controller: TreadmillController, healthConnect: HealthConnectBridge) {
     val state by controller.state.collectAsState()
     var page by remember { mutableIntStateOf(0) }
     var showStartConfirm by remember { mutableStateOf(false) }
+    var healthAvailable by remember { mutableStateOf(false) }
+    var healthGranted by remember { mutableStateOf(false) }
+    var healthMessage by remember { mutableStateOf<String?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
         if (controller.hasPermissions()) controller.autoConnect()
+    }
+
+    val healthPermissionLauncher = rememberLauncherForActivityResult(
+        PermissionController.createRequestPermissionResultContract()
+    ) { granted ->
+        healthGranted = granted.containsAll(healthConnect.permissions)
+        healthMessage = if (healthGranted) "Health Connect ativo." else "Permissões do Health Connect não concedidas."
     }
 
     LaunchedEffect(Unit) {
@@ -754,6 +778,8 @@ private fun N4225Screen(controller: TreadmillController) {
         } else {
             controller.autoConnect()
         }
+        healthAvailable = healthConnect.isAvailable()
+        healthGranted = if (healthAvailable) healthConnect.hasPermissions() else false
     }
 
     Column(
@@ -790,8 +816,24 @@ private fun N4225Screen(controller: TreadmillController) {
 
         when (page) {
             0 -> WorkoutPage(state, controller) { showStartConfirm = true }
-            1 -> HistoryPage(state, controller)
-            else -> MorePage(state, controller)
+            1 -> HistoryPage(
+                s = state,
+                c = controller,
+                healthConnect = healthConnect,
+                healthAvailable = healthAvailable,
+                healthGranted = healthGranted,
+                requestHealthPermissions = { healthPermissionLauncher.launch(healthConnect.permissions) },
+                onHealthMessage = { healthMessage = it },
+                healthMessage = healthMessage,
+            )
+            else -> MorePage(
+                s = state,
+                c = controller,
+                healthAvailable = healthAvailable,
+                healthGranted = healthGranted,
+                requestHealthPermissions = { healthPermissionLauncher.launch(healthConnect.permissions) },
+                healthMessage = healthMessage,
+            )
         }
     }
 
@@ -933,9 +975,19 @@ private fun SmallMetric(label: String, value: String, modifier: Modifier = Modif
 }
 
 @Composable
-private fun HistoryPage(s: AppState, c: TreadmillController) {
+private fun HistoryPage(
+    s: AppState,
+    c: TreadmillController,
+    healthConnect: HealthConnectBridge,
+    healthAvailable: Boolean,
+    healthGranted: Boolean,
+    requestHealthPermissions: () -> Unit,
+    onHealthMessage: (String) -> Unit,
+    healthMessage: String?,
+) {
     val totalDistance = s.history.sumOf { it.distanceKm }
     val totalSeconds = s.history.sumOf { it.durationSec }
+    val scope = rememberCoroutineScope()
 
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
@@ -943,6 +995,7 @@ private fun HistoryPage(s: AppState, c: TreadmillController) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text("Resumo", fontWeight = FontWeight.Bold)
                     Text("${s.history.size} sessões · %.1f km · %s".format(Locale.US, totalDistance, formatLongDuration(totalSeconds)))
+                    if (healthMessage != null) Text(healthMessage, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -953,14 +1006,36 @@ private fun HistoryPage(s: AppState, c: TreadmillController) {
             }
         } else {
             items(s.history, key = { it.id }) { session ->
-                SessionCard(session) { c.deleteSession(session.id) }
+                SessionCard(
+                    session = session,
+                    onDelete = { c.deleteSession(session.id) },
+                    onExport = {
+                        when {
+                            session.healthConnectExported -> onHealthMessage("Esta sessão já foi enviada para o Health Connect.")
+                            !healthAvailable -> onHealthMessage("Health Connect não está disponível neste telemóvel.")
+                            !healthGranted -> {
+                                onHealthMessage("Autoriza primeiro o Health Connect e depois toca novamente em Sincronizar.")
+                                requestHealthPermissions()
+                            }
+                            else -> scope.launch {
+                                val result = healthConnect.export(session)
+                                if (result.isSuccess) {
+                                    c.markHealthExported(session.id)
+                                    onHealthMessage("Sessão enviada para o Health Connect.")
+                                } else {
+                                    onHealthMessage("Falha no Health Connect: ${result.exceptionOrNull()?.message ?: "erro desconhecido"}")
+                                }
+                            }
+                        }
+                    },
+                )
             }
         }
     }
 }
 
 @Composable
-private fun SessionCard(session: WorkoutSession, onDelete: () -> Unit) {
+private fun SessionCard(session: WorkoutSession, onDelete: () -> Unit, onExport: () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(formatDate(session.startedAtMs), fontWeight = FontWeight.Bold)
@@ -978,14 +1053,47 @@ private fun SessionCard(session: WorkoutSession, onDelete: () -> Unit) {
                 session.maxHeartRateBpm?.let { add("FC máx $it") }
             }
             if (extras.isNotEmpty()) Text(extras.joinToString(" · "))
-            TextButton(onClick = onDelete) { Text("Apagar") }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (session.healthConnectExported) {
+                    TextButton(onClick = {}) { Text("Health Connect ✓") }
+                } else {
+                    TextButton(onClick = onExport) { Text("Sincronizar") }
+                }
+                TextButton(onClick = onDelete) { Text("Apagar") }
+            }
         }
     }
 }
 
 @Composable
-private fun MorePage(s: AppState, c: TreadmillController) {
+private fun MorePage(
+    s: AppState,
+    c: TreadmillController,
+    healthAvailable: Boolean,
+    healthGranted: Boolean,
+    requestHealthPermissions: () -> Unit,
+    healthMessage: String?,
+) {
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("Health Connect", fontWeight = FontWeight.Bold)
+                    Text(
+                        when {
+                            !healthAvailable -> "Indisponível neste dispositivo"
+                            healthGranted -> "Ativo — podes sincronizar sessões no Histórico"
+                            else -> "Disponível, mas ainda sem permissão"
+                        }
+                    )
+                    if (healthAvailable && !healthGranted) {
+                        Button(onClick = requestHealthPermissions) { Text("Ativar Health Connect") }
+                    }
+                    if (healthMessage != null) Text(healthMessage, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
