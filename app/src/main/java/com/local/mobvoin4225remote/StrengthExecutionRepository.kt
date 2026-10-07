@@ -343,10 +343,18 @@ class StrengthExecutionRepository(context: Context) {
 
     private fun refreshSync(date: String, message: String? = null) {
         if (!importedDbFile.exists()) {
-            state.value = state.value.copy(
+            val workout = loadFreeOnlyWorkout(date)
+            val localCompleted = db.readableDatabase.rawQuery(
+                "SELECT COUNT(*) FROM local_set WHERE completed_at IS NOT NULL",
+                null,
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+            state.value = StrengthExecutionState(
                 selectedDate = date,
-                workout = null,
-                lastMessage = "Importa primeiro os dados do MyStrengthBook/FitNotes.",
+                workout = workout,
+                autoMappedCount = 0,
+                reviewMappings = emptyList(),
+                analytics = StrengthAnalytics(pendingSyncSets = 0),
+                lastMessage = message ?: if (workout == null) "Sem plano importado — podes criar um treino livre." else null,
                 busy = false,
             )
             return
@@ -374,6 +382,79 @@ class StrengthExecutionRepository(context: Context) {
         } finally {
             imported.close()
         }
+    }
+
+    private fun loadFreeOnlyWorkout(date: String): WorkoutDayPlan? {
+        val exercises = mutableListOf<WorkoutExercisePlan>()
+        db.readableDatabase.rawQuery(
+            """
+            SELECT id,name,rest_seconds
+            FROM free_exercise
+            WHERE date=?
+            ORDER BY order_index
+            """.trimIndent(),
+            arrayOf(date),
+        ).use { fc ->
+            while (fc.moveToNext()) {
+                val freeId = fc.getLong(0)
+                val name = fc.getString(1)
+                val rest = fc.getInt(2)
+                val sourceId = "free:$freeId"
+                val sets = mutableListOf<WorkoutSetPlan>()
+                db.readableDatabase.rawQuery(
+                    """
+                    SELECT id,set_index,load,reps,rpe
+                    FROM free_set_plan
+                    WHERE free_exercise_id=?
+                    ORDER BY set_index
+                    """.trimIndent(),
+                    arrayOf(freeId.toString()),
+                ).use { sc ->
+                    while (sc.moveToNext()) {
+                        val planId = sc.getLong(0)
+                        val setIndex = sc.getInt(1)
+                        val key = "free:$freeId:set:$planId"
+                        val local = loadLocalSet(key)
+                        sets += WorkoutSetPlan(
+                            key = key,
+                            sourceExerciseId = sourceId,
+                            groupIndex = 0,
+                            setIndex = setIndex,
+                            prescribedLoad = if (sc.isNull(2)) null else sc.getDouble(2),
+                            prescribedReps = if (sc.isNull(3)) null else sc.getInt(3),
+                            prescribedRpe = if (sc.isNull(4)) null else sc.getDouble(4),
+                            actualLoad = local?.weight,
+                            actualReps = local?.reps,
+                            actualRpe = local?.rpe,
+                            completed = local?.completedAt != null,
+                            comment = local?.comment,
+                            videoUri = local?.videoUri,
+                        )
+                    }
+                }
+                exercises += WorkoutExercisePlan(
+                    sourceId = sourceId,
+                    name = name,
+                    notes = null,
+                    instructions = null,
+                    restSeconds = rest,
+                    mappedFitNotesName = null,
+                    mappingConfidence = null,
+                    lastPerformance = null,
+                    bestRecentE1rm = null,
+                    isFree = true,
+                    sets = sets,
+                )
+            }
+        }
+        return if (exercises.isEmpty()) null else WorkoutDayPlan(
+            date = date,
+            program = null,
+            week = null,
+            session = null,
+            programInstance = null,
+            exercises = exercises,
+        )
     }
 
     private fun loadWorkout(imported: SQLiteDatabase, date: String): WorkoutDayPlan? {
