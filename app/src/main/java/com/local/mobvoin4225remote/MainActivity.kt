@@ -1159,16 +1159,15 @@ private fun TodayStrengthPage(
             .filter { it.contains(freeExerciseName, ignoreCase = true) }
             .take(6)
     }
-    var restEndMs by remember { mutableStateOf<Long?>(null) }
     var restRemaining by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(restEndMs) {
-        while (restEndMs != null) {
-            val remaining = (((restEndMs ?: 0L) - System.currentTimeMillis() + 999L) / 1000L).toInt()
+    LaunchedEffect(execution.restEndMs) {
+        while (execution.restEndMs != null) {
+            val remaining = (((execution.restEndMs ?: 0L) - System.currentTimeMillis() + 999L) / 1000L).toInt()
             restRemaining = remaining.coerceAtLeast(0)
             if (remaining <= 0) {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                restEndMs = null
+                repository.clearRest()
                 break
             }
             delay(1000)
@@ -1205,7 +1204,7 @@ private fun TodayStrengthPage(
             }
         }
 
-        if (restEndMs != null) {
+        if (execution.restEndMs != null) {
             item {
                 Card(Modifier.fillMaxWidth()) {
                     Row(
@@ -1217,10 +1216,8 @@ private fun TodayStrengthPage(
                             Text(formatTime(restRemaining), style = MaterialTheme.typography.headlineMedium)
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            OutlinedButton(onClick = {
-                                restEndMs = (restEndMs ?: System.currentTimeMillis()) + 30_000L
-                            }) { Text("+30s") }
-                            TextButton(onClick = { restEndMs = null }) { Text("Saltar") }
+                            OutlinedButton(onClick = { repository.extendRest(30) }) { Text("+30s") }
+                            TextButton(onClick = { repository.clearRest() }) { Text("Saltar") }
                         }
                     }
                 }
@@ -1292,9 +1289,7 @@ private fun TodayStrengthPage(
                 StrengthExerciseCard(
                     exercise = exercise,
                     repository = repository,
-                    onRest = { seconds ->
-                        restEndMs = System.currentTimeMillis() + seconds * 1000L
-                    },
+                    onRest = { _ -> },
                     onFilmSet = onFilmSet,
                     onChooseVideo = onChooseVideo,
                 )
