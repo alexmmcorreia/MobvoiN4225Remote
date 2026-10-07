@@ -165,7 +165,7 @@ class StrengthExecutionRepository(context: Context) {
             putNullable("comment", current?.comment)
             put("video_uri", uri)
             if (current?.completedAt != null) put("completed_at", current.completedAt)
-            put("sync_state", "pending")
+            put("sync_state", if (set.sourceExerciseId.startsWith("free:")) "local_only" else "pending")
         }
         db.writableDatabase.insertWithOnConflict(
             "local_set",
@@ -358,10 +358,6 @@ class StrengthExecutionRepository(context: Context) {
     private fun refreshSync(date: String, message: String? = null) {
         if (!importedDbFile.exists()) {
             val workout = loadFreeOnlyWorkout(date)
-            val localCompleted = db.readableDatabase.rawQuery(
-                "SELECT COUNT(*) FROM local_set WHERE completed_at IS NOT NULL",
-                null,
-            ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
             state.value = StrengthExecutionState(
                 selectedDate = date,
                 workout = workout,
