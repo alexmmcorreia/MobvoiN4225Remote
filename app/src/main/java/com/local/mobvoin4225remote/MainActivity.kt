@@ -18,6 +18,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import androidx.core.content.FileProvider
+import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -58,6 +60,7 @@ import androidx.core.content.ContextCompat
 import androidx.health.connect.client.PermissionController
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -144,6 +147,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var healthConnect: HealthConnectBridge
     private lateinit var heartRateMonitor: HeartRateMonitor
     private lateinit var trainingRepository: TrainingRepository
+    private lateinit var strengthExecutionRepository: StrengthExecutionRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -151,9 +155,10 @@ class MainActivity : ComponentActivity() {
         healthConnect = HealthConnectBridge(this)
         heartRateMonitor = HeartRateMonitor(this)
         trainingRepository = TrainingRepository(this)
+        strengthExecutionRepository = StrengthExecutionRepository(this)
         setContent {
             MaterialTheme {
-                N4225Screen(controller, healthConnect, heartRateMonitor, trainingRepository)
+                N4225Screen(controller, healthConnect, heartRateMonitor, trainingRepository, strengthExecutionRepository)
             }
         }
     }
@@ -785,10 +790,12 @@ private fun N4225Screen(
     healthConnect: HealthConnectBridge,
     heartRateMonitor: HeartRateMonitor,
     trainingRepository: TrainingRepository,
+    strengthExecutionRepository: StrengthExecutionRepository,
 ) {
     val state by controller.state.collectAsState()
     val watch by heartRateMonitor.state.collectAsState()
     val strength by trainingRepository.state.collectAsState()
+    val execution by strengthExecutionRepository.state.collectAsState()
     val context = LocalContext.current
     var page by remember { mutableIntStateOf(0) }
     var showStartConfirm by remember { mutableStateOf(false) }
@@ -804,7 +811,10 @@ private fun N4225Screen(
         if (uri != null) {
             val stream = context.contentResolver.openInputStream(uri)
             if (stream != null) {
-                importScope.launch { stream.use { trainingRepository.importMsb(it) } }
+                importScope.launch {
+                    stream.use { trainingRepository.importMsb(it) }
+                    strengthExecutionRepository.refresh()
+                }
             }
         }
     }
@@ -816,9 +826,29 @@ private fun N4225Screen(
             val name = queryDisplayName(context, uri)
             val stream = context.contentResolver.openInputStream(uri)
             if (stream != null) {
-                importScope.launch { stream.use { trainingRepository.importFitNotes(it, name) } }
+                importScope.launch {
+                    stream.use { trainingRepository.importFitNotes(it, name) }
+                    strengthExecutionRepository.refresh()
+                }
             }
         }
+    }
+
+    var pendingVideoSet by remember { mutableStateOf<WorkoutSetPlan?>(null) }
+    var pendingVideoUri by remember { mutableStateOf<android.net.Uri?>(null) }
+
+    val videoLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CaptureVideo()
+    ) { success ->
+        val set = pendingVideoSet
+        val uri = pendingVideoUri
+        if (success && set != null && uri != null) {
+            importScope.launch {
+                strengthExecutionRepository.attachVideo(set, uri.toString())
+            }
+        }
+        pendingVideoSet = null
+        pendingVideoUri = null
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -879,16 +909,27 @@ private fun N4225Screen(
         }
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            NavButton("Passadeira", page == 0, Modifier.weight(1f)) { page = 0 }
-            NavButton("Força", page == 1, Modifier.weight(1f)) { page = 1 }
-            NavButton("Histórico", page == 2, Modifier.weight(1f)) { page = 2 }
+            NavButton("Hoje", page == 0, Modifier.weight(1f)) { page = 0 }
+            NavButton("Calendário", page == 1, Modifier.weight(1f)) { page = 1 }
+            NavButton("Cardio", page == 2, Modifier.weight(1f)) { page = 2 }
             NavButton("Mais", page == 3, Modifier.weight(1f)) { page = 3 }
         }
 
         when (page) {
-            0 -> WorkoutPage(state, watch, controller) { showStartConfirm = true }
+            0 -> TodayStrengthPage(
+                execution = execution,
+                watch = watch,
+                repository = strengthExecutionRepository,
+                onFilmSet = { set ->
+                    val uri = createWorkoutVideoUri(context, set.key)
+                    pendingVideoSet = set
+                    pendingVideoUri = uri
+                    videoLauncher.launch(uri)
+                },
+            )
             1 -> StrengthPage(
                 s = strength,
+                execution = execution,
                 importMsb = { msbImportLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                 importFitNotes = { fitNotesImportLauncher.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
             )
@@ -1068,8 +1109,275 @@ private fun SmallMetric(label: String, value: String, modifier: Modifier = Modif
 }
 
 @Composable
+private fun TodayStrengthPage(
+    execution: StrengthExecutionState,
+    watch: HeartRateState,
+    repository: StrengthExecutionRepository,
+    onFilmSet: (WorkoutSetPlan) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var restEndMs by remember { mutableStateOf<Long?>(null) }
+    var restRemaining by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(restEndMs) {
+        while (restEndMs != null) {
+            val remaining = (((restEndMs ?: 0L) - System.currentTimeMillis() + 999L) / 1000L).toInt()
+            restRemaining = remaining.coerceAtLeast(0)
+            if (remaining <= 0) {
+                restEndMs = null
+                break
+            }
+            delay(1000)
+        }
+    }
+
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                OutlinedButton(onClick = { scope.launch { repository.previousDay() } }) { Text("‹") }
+                Column {
+                    Text(execution.selectedDate, fontWeight = FontWeight.Bold)
+                    TextButton(onClick = { scope.launch { repository.goToday() } }) { Text("Hoje") }
+                }
+                OutlinedButton(onClick = { scope.launch { repository.nextDay() } }) { Text("›") }
+            }
+        }
+
+        if (restEndMs != null) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column {
+                            Text("Descanso", fontWeight = FontWeight.Bold)
+                            Text(formatTime(restRemaining), style = MaterialTheme.typography.headlineMedium)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(onClick = {
+                                restEndMs = (restEndMs ?: System.currentTimeMillis()) + 30_000L
+                            }) { Text("+30s") }
+                            TextButton(onClick = { restEndMs = null }) { Text("Saltar") }
+                        }
+                    }
+                }
+            }
+        }
+
+        val workout = execution.workout
+        if (workout == null) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Sem treino MSB planeado", fontWeight = FontWeight.Bold)
+                        Text("Escolhe outro dia no calendário ou atualiza a importação do MyStrengthBook.")
+                        execution.lastMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
+            }
+        } else {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            if (workout.complete) "Treino completo" else "Treino de força",
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text("${workout.completedSets}/${workout.totalSets} séries concluídas")
+                        Text("FC: ${watch.heartRateBpm?.let { "$it bpm" } ?: "—"}")
+                        execution.lastMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
+            }
+
+            items(workout.exercises, key = { it.sourceId }) { exercise ->
+                StrengthExerciseCard(
+                    exercise = exercise,
+                    repository = repository,
+                    onRest = { seconds ->
+                        restEndMs = System.currentTimeMillis() + seconds * 1000L
+                    },
+                    onFilmSet = onFilmSet,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StrengthExerciseCard(
+    exercise: WorkoutExercisePlan,
+    repository: StrengthExecutionRepository,
+    onRest: (Int) -> Unit,
+    onFilmSet: (WorkoutSetPlan) -> Unit,
+) {
+    val nextIncomplete = exercise.sets.firstOrNull { !it.completed }
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(exercise.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            exercise.notes?.takeIf { it.isNotBlank() }?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall)
+            }
+            if (exercise.mappedFitNotesName != null) {
+                Text(
+                    "FitNotes: ${exercise.mappedFitNotesName} · descanso ${formatTime(exercise.restSeconds)}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            } else {
+                Text("Descanso: ${formatTime(exercise.restSeconds)}", style = MaterialTheme.typography.bodySmall)
+            }
+
+            if (nextIncomplete != null) {
+                OutlinedButton(onClick = { onFilmSet(nextIncomplete) }) {
+                    Text(if (nextIncomplete.videoUri != null) "Vídeo preparado ✓" else "Filmar próxima série")
+                }
+            }
+
+            exercise.sets.forEachIndexed { index, set ->
+                StrengthSetRow(
+                    number = index + 1,
+                    set = set,
+                    repository = repository,
+                    onRest = onRest,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StrengthSetRow(
+    number: Int,
+    set: WorkoutSetPlan,
+    repository: StrengthExecutionRepository,
+    onRest: (Int) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var weight by remember(set.key, set.actualLoad, set.prescribedLoad) {
+        mutableStateOf(formatEditable(set.actualLoad ?: set.prescribedLoad))
+    }
+    var reps by remember(set.key, set.actualReps, set.prescribedReps) {
+        mutableStateOf((set.actualReps ?: set.prescribedReps)?.toString().orEmpty())
+    }
+    var rpe by remember(set.key, set.actualRpe, set.prescribedRpe) {
+        mutableStateOf(formatEditable(set.actualRpe ?: set.prescribedRpe))
+    }
+    var comment by remember(set.key, set.comment) { mutableStateOf(set.comment.orEmpty()) }
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Série $number", fontWeight = FontWeight.Bold)
+                Text(if (set.completed) "✓ feita" else "por fazer")
+            }
+
+            Text(
+                "Prescrito: ${formatPrescription(set)}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(
+                    value = weight,
+                    onValueChange = { weight = it },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    label = { Text("kg") },
+                )
+                OutlinedTextField(
+                    value = reps,
+                    onValueChange = { reps = it },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    label = { Text("reps") },
+                )
+                OutlinedTextField(
+                    value = rpe,
+                    onValueChange = { rpe = it },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    label = { Text("RPE") },
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(onClick = {
+                    val value = (rpe.replace(",", ".").toDoubleOrNull() ?: 5.0)
+                    rpe = formatEditable((value - 0.5).coerceAtLeast(5.0))
+                }) { Text("RPE −0,5") }
+                OutlinedButton(onClick = {
+                    val value = (rpe.replace(",", ".").toDoubleOrNull() ?: 5.0)
+                    rpe = formatEditable((value + 0.5).coerceAtMost(10.0))
+                }) { Text("RPE +0,5") }
+            }
+
+            OutlinedTextField(
+                value = comment,
+                onValueChange = { comment = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Nota (opcional)") },
+            )
+
+            if (set.videoUri != null) {
+                Text("🎥 vídeo associado", style = MaterialTheme.typography.bodySmall)
+            }
+
+            if (set.completed) {
+                val e1rm = estimateE1rm(set.actualLoad, set.actualReps, set.actualRpe)
+                if (e1rm != null) {
+                    Text("e1RM estimado: %.1f kg".format(Locale.US, e1rm))
+                }
+                TextButton(onClick = { scope.launch { repository.undoSet(set.key) } }) {
+                    Text("Desfazer")
+                }
+            } else {
+                Button(
+                    onClick = {
+                        val w = weight.replace(",", ".").toDoubleOrNull()
+                        val rp = reps.toIntOrNull()
+                        val r = rpe.replace(",", ".").toDoubleOrNull()?.coerceIn(5.0, 10.0)
+                        scope.launch {
+                            val rest = repository.completeSet(set, w, rp, r, comment)
+                            onRest(rest)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("✓ Concluir série")
+                }
+            }
+        }
+    }
+}
+
+private fun formatPrescription(set: WorkoutSetPlan): String {
+    val parts = mutableListOf<String>()
+    set.prescribedLoad?.let { parts += "${formatEditable(it)} kg" }
+    set.prescribedReps?.let { parts += "× $it" }
+    set.prescribedRpe?.let { parts += "@${formatEditable(it)}" }
+    return if (parts.isEmpty()) "livre" else parts.joinToString(" ")
+}
+
+private fun formatEditable(value: Double?): String =
+    value?.let {
+        if (it % 1.0 == 0.0) it.toInt().toString()
+        else "%.1f".format(Locale.US, it)
+    }.orEmpty()
+
+private fun estimateE1rm(weight: Double?, reps: Int?, rpe: Double?): Double? {
+    if (weight == null || reps == null || weight <= 0 || reps <= 0) return null
+    val rir = if (rpe == null) 0.0 else (10.0 - rpe).coerceIn(0.0, 5.0)
+    val equivalentReps = reps + rir
+    return weight * (1.0 + equivalentReps / 30.0)
+}
+
+@Composable
 private fun StrengthPage(
     s: StrengthDataState,
+    execution: StrengthExecutionState,
     importMsb: () -> Unit,
     importFitNotes: () -> Unit,
 ) {
@@ -1104,6 +1412,24 @@ private fun StrengthPage(
                         if (s.fitNotes.imported) "FitNotes ✓ — ${s.fitNotes.details}"
                         else "FitNotes — ainda não importado"
                     )
+                }
+            }
+        }
+
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Matching MSB ↔ FitNotes", fontWeight = FontWeight.Bold)
+                    Text("${execution.autoMappedCount} exercícios ligados automaticamente com ≥95% de confiança")
+                    if (execution.reviewMappings.isNotEmpty()) {
+                        Text("${execution.reviewMappings.size} candidatos por confirmar", style = MaterialTheme.typography.bodyMedium)
+                        execution.reviewMappings.take(5).forEach { candidate ->
+                            Text(
+                                "${candidate.msbName} → ${candidate.fitNotesName ?: "sem candidato"} (${(candidate.confidence * 100).toInt()}%)",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1528,6 +1854,17 @@ private fun ByteArray.u32(offset: Int): UInt =
 private fun ByteArray.toHex(): String = joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
 private fun UUID.short(): String = toString().substring(4, 8)
 
+
+private fun createWorkoutVideoUri(context: Context, setKey: String): android.net.Uri {
+    val dir = File(context.filesDir, "workout_videos").apply { mkdirs() }
+    val safe = setKey.replace(Regex("[^A-Za-z0-9_-]"), "_")
+    val file = File(dir, "${System.currentTimeMillis()}_${safe}.mp4")
+    return FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        file,
+    )
+}
 
 private fun queryDisplayName(context: Context, uri: android.net.Uri): String? {
     return runCatching {
