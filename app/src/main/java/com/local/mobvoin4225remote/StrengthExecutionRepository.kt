@@ -97,6 +97,8 @@ class StrengthExecutionRepository(context: Context) {
     val state = MutableStateFlow(StrengthExecutionState(busy = true))
 
     init {
+        // Open once so lightweight schema migrations finish before other repositories read this DB.
+        db.writableDatabase
         scope.launch {
             runCatching { refreshSync(LocalDate.now().toString()) }
                 .onFailure { error ->
