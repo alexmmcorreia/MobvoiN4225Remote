@@ -40,3 +40,21 @@ This is an unofficial controller and is not affiliated with Mobvoi.
 - Health Connect export for workout, distance and calories.
 - FTMS diagnostics moved under **Mais**.
 - Watch integration is planned for a later version.
+
+
+## v0.6
+
+This batch moves the project from a treadmill remote toward a local-first training hub.
+
+- Strength-first navigation: Today, Calendar, Cardio, More.
+- MSB workout execution with load, reps, RPE, notes and actual-vs-prescribed deltas.
+- Automatic rest timer with FitNotes rest defaults, +30 s, skip and haptic completion.
+- Recent FitNotes performance and estimated e1RM context inside the workout.
+- Likely e1RM PR indication.
+- Exercise reconciliation between MSB and FitNotes with >=95% auto-matching and manual accept/reject review.
+- 30-day strength dashboard: training days, sets, tonnage, MSB adherence and average RPE drift.
+- Video capture or attachment per set.
+- Pending MSB write-back queue with safe JSON export; no private endpoint is called yet.
+- Standalone free-workout mode, including FitNotes exercise autocomplete and extra sets.
+- Local Training Hub execution merged back into calendar history.
+- N4225 remains available under Cardio instead of dominating the app.
