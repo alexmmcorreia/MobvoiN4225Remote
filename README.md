@@ -31,3 +31,12 @@ Keep the belt empty and stay next to the physical power switch.
 8. STOP.
 
 This is an unofficial controller and is not affiliated with Mobvoi.
+
+## v0.2
+
+- Simplified daily-use UI with automatic reconnect.
+- Automatic workout recording and local history.
+- Live time, distance, calories, average/max speed.
+- Health Connect export for workout, distance and calories.
+- FTMS diagnostics moved under **Mais**.
+- Watch integration is planned for a later version.
