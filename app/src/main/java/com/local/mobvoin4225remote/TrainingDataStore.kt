@@ -27,9 +27,11 @@ data class StrengthDaySummary(
     val msbActualSets: Int,
     val fitNotesSets: Int,
     val exerciseNames: List<String>,
+    val localSets: Int = 0,
+    val localFreeExercises: Int = 0,
 ) {
-    val hasPlan: Boolean get() = plannedExercises > 0
-    val hasActual: Boolean get() = msbActualSets > 0 || fitNotesSets > 0
+    val hasPlan: Boolean get() = plannedExercises > 0 || localFreeExercises > 0
+    val hasActual: Boolean get() = msbActualSets > 0 || fitNotesSets > 0 || localSets > 0
 }
 
 data class StrengthDataState(
@@ -74,9 +76,90 @@ class TrainingRepository(context: Context) {
         return StrengthDataState(
             msb = meta["MSB"] ?: SourceImportSummary(),
             fitNotes = meta["FITNOTES"] ?: SourceImportSummary(),
-            days = store.loadDays(),
+            days = mergeLocalDays(store.loadDays()),
             busy = false,
         )
+
+    private fun mergeLocalDays(base: List<StrengthDaySummary>): List<StrengthDaySummary> {
+        val executionFile = appContext.getDatabasePath("strength_execution.db")
+        if (!executionFile.exists()) return base
+
+        val byDate = base.associateBy { it.date }.toMutableMap()
+        val execution = SQLiteDatabase.openDatabase(
+            executionFile.absolutePath,
+            null,
+            SQLiteDatabase.OPEN_READONLY,
+        )
+        val importFile = appContext.getDatabasePath("training_hub.db")
+        val imported = if (importFile.exists()) {
+            SQLiteDatabase.openDatabase(importFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+        } else null
+
+        try {
+            val localCounts = mutableMapOf<String, Int>()
+            execution.rawQuery(
+                """
+                SELECT source_exercise_id,COUNT(*)
+                FROM local_set
+                WHERE completed_at IS NOT NULL
+                GROUP BY source_exercise_id
+                """.trimIndent(),
+                null,
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val sourceId = cursor.getString(0)
+                    val count = cursor.getInt(1)
+                    val date = if (sourceId.startsWith("free:")) {
+                        val id = sourceId.removePrefix("free:")
+                        execution.rawQuery(
+                            "SELECT date FROM free_exercise WHERE id=?",
+                            arrayOf(id),
+                        ).use { dc -> if (dc.moveToFirst()) dc.getString(0) else null }
+                    } else {
+                        imported?.rawQuery(
+                            "SELECT date FROM planned_exercise WHERE source_id=?",
+                            arrayOf(sourceId),
+                        )?.use { dc -> if (dc.moveToFirst()) dc.getString(0) else null }
+                    }
+                    if (date != null) localCounts[date] = (localCounts[date] ?: 0) + count
+                }
+            }
+
+            val freeCounts = mutableMapOf<String, Int>()
+            execution.rawQuery(
+                "SELECT date,COUNT(*) FROM free_exercise GROUP BY date",
+                null,
+            ).use { cursor ->
+                while (cursor.moveToNext()) freeCounts[cursor.getString(0)] = cursor.getInt(1)
+            }
+
+            val allDates = (byDate.keys + localCounts.keys + freeCounts.keys).toSet()
+            for (date in allDates) {
+                val current = byDate[date]
+                byDate[date] = if (current != null) {
+                    current.copy(
+                        localSets = localCounts[date] ?: 0,
+                        localFreeExercises = freeCounts[date] ?: 0,
+                    )
+                } else {
+                    StrengthDaySummary(
+                        date = date,
+                        plannedExercises = 0,
+                        plannedSetGroups = 0,
+                        msbActualSets = 0,
+                        fitNotesSets = 0,
+                        exerciseNames = emptyList(),
+                        localSets = localCounts[date] ?: 0,
+                        localFreeExercises = freeCounts[date] ?: 0,
+                    )
+                }
+            }
+        } finally {
+            imported?.close()
+            execution.close()
+        }
+        return byDate.values.sortedByDescending { it.date }
+    }
     }
 }
 
