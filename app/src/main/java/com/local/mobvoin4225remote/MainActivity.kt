@@ -55,6 +55,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -1118,6 +1120,7 @@ private fun TodayStrengthPage(
     onFilmSet: (WorkoutSetPlan) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
     var restEndMs by remember { mutableStateOf<Long?>(null) }
     var restRemaining by remember { mutableIntStateOf(0) }
 
@@ -1126,6 +1129,7 @@ private fun TodayStrengthPage(
             val remaining = (((restEndMs ?: 0L) - System.currentTimeMillis() + 999L) / 1000L).toInt()
             restRemaining = remaining.coerceAtLeast(0)
             if (remaining <= 0) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 restEndMs = null
                 break
             }
@@ -1329,6 +1333,25 @@ private fun StrengthSetRow(
                     singleLine = true,
                     label = { Text("RPE") },
                 )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = {
+                    val value = weight.replace(",", ".").toDoubleOrNull() ?: 0.0
+                    weight = formatEditable((value - 2.5).coerceAtLeast(0.0))
+                }) { Text("−2,5 kg") }
+                TextButton(onClick = {
+                    val value = weight.replace(",", ".").toDoubleOrNull() ?: 0.0
+                    weight = formatEditable(value + 2.5)
+                }) { Text("+2,5 kg") }
+                TextButton(onClick = {
+                    val value = reps.toIntOrNull() ?: 0
+                    reps = (value - 1).coerceAtLeast(0).toString()
+                }) { Text("−1 rep") }
+                TextButton(onClick = {
+                    val value = reps.toIntOrNull() ?: 0
+                    reps = (value + 1).toString()
+                }) { Text("+1 rep") }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
