@@ -78,6 +78,7 @@ data class StrengthExecutionState(
     val reviewMappings: List<MappingCandidate> = emptyList(),
     val analytics: StrengthAnalytics = StrengthAnalytics(),
     val knownExercises: List<String> = emptyList(),
+    val restEndMs: Long? = null,
     val lastMessage: String? = null,
     val busy: Boolean = false,
 )
@@ -140,6 +141,7 @@ class StrengthExecutionRepository(context: Context) {
             SQLiteDatabase.CONFLICT_REPLACE,
         )
         refreshSync(state.value.selectedDate, "Série gravada · descanso ${formatSeconds(rest)}")
+        state.value = state.value.copy(restEndMs = System.currentTimeMillis() + rest * 1000L)
         rest
     }
 
@@ -189,6 +191,15 @@ class StrengthExecutionRepository(context: Context) {
         }
         db.writableDatabase.update("exercise_map", values, "msb_normalized=?", arrayOf(norm))
         refreshSync(state.value.selectedDate, "Correspondência rejeitada")
+    }
+
+    fun extendRest(seconds: Int = 30) {
+        val base = state.value.restEndMs ?: System.currentTimeMillis()
+        state.value = state.value.copy(restEndMs = base + seconds * 1000L)
+    }
+
+    fun clearRest() {
+        state.value = state.value.copy(restEndMs = null)
     }
 
     suspend fun addFreeExercise(
@@ -355,6 +366,7 @@ class StrengthExecutionRepository(context: Context) {
                 autoMappedCount = 0,
                 reviewMappings = emptyList(),
                 analytics = StrengthAnalytics(pendingSyncSets = 0),
+                restEndMs = state.value.restEndMs,
                 lastMessage = message ?: if (workout == null) "Sem plano importado — podes criar um treino livre." else null,
                 busy = false,
             )
@@ -378,6 +390,7 @@ class StrengthExecutionRepository(context: Context) {
                 reviewMappings = mappings.second,
                 analytics = loadAnalytics(imported),
                 knownExercises = loadKnownExercises(imported),
+                restEndMs = state.value.restEndMs,
                 lastMessage = message,
                 busy = false,
             )
