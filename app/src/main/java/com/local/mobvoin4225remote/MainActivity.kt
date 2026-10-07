@@ -871,7 +871,6 @@ private fun N4225Screen(
         if (!controller.hasPermissions()) {
             permissionLauncher.launch(controller.requiredPermissions())
         } else {
-            controller.autoConnect()
             if (watch.savedAddress != null) heartRateMonitor.autoConnect()
         }
         healthAvailable = healthConnect.isAvailable()
@@ -892,18 +891,22 @@ private fun N4225Screen(
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Column {
-                Text("N4225", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("Training Hub", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                 Text(
-                    if (state.controlReady) "Ligada e pronta" else state.connection,
+                    when {
+                        execution.workout != null -> "Treino de força · ${execution.workout.completedSets}/${execution.workout.totalSets} séries"
+                        watch.heartRateBpm != null -> "Relógio · ${watch.heartRateBpm} bpm"
+                        else -> "Treino, cardio e histórico"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
-            if (!state.controlReady) {
+            if (page == 2 && !state.controlReady) {
                 OutlinedButton(onClick = {
                     if (controller.hasPermissions()) controller.autoConnect()
                     else permissionLauncher.launch(controller.requiredPermissions())
                 }) {
-                    Text("Ligar")
+                    Text("Ligar passadeira")
                 }
             }
         }
@@ -933,16 +936,7 @@ private fun N4225Screen(
                 importMsb = { msbImportLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                 importFitNotes = { fitNotesImportLauncher.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
             )
-            2 -> HistoryPage(
-                s = state,
-                c = controller,
-                healthConnect = healthConnect,
-                healthAvailable = healthAvailable,
-                healthGranted = healthGranted,
-                requestHealthPermissions = { healthPermissionLauncher.launch(healthConnect.permissions) },
-                onHealthMessage = { healthMessage = it },
-                healthMessage = healthMessage,
-            )
+            2 -> WorkoutPage(state, watch, controller) { showStartConfirm = true }
             else -> MorePage(
                 s = state,
                 watch = watch,
