@@ -19,6 +19,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -476,9 +477,9 @@ class TreadmillController(private val context: Context) {
                 state.update {
                     it.copy(
                         heartRateRange = Range3(
-                            value[0].toInt() and 0xFF.toInt(),
-                            value[1].toInt() and 0xFF.toInt(),
-                            value[2].toInt() and 0xFF.toInt(),
+                            (value[0].toInt() and 0xFF).toDouble(),
+                            (value[1].toInt() and 0xFF).toDouble(),
+                            (value[2].toInt() and 0xFF).toDouble(),
                         )
                     )
                 }
