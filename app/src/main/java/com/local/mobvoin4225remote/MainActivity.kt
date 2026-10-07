@@ -904,6 +904,10 @@ private fun N4225Screen(
         controller.updateExternalHeartRate(watch.heartRateBpm)
     }
 
+    LaunchedEffect(page) {
+        if (page == 1) trainingRepository.refresh()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1677,6 +1681,8 @@ private fun StrengthDayCard(day: StrengthDaySummary, onOpen: (String) -> Unit) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(day.date, fontWeight = FontWeight.Bold)
             val status = when {
+                day.localSets > 0 && day.hasPlan -> "Em execução no Training Hub"
+                day.localSets > 0 -> "Executado no Training Hub"
                 day.hasPlan && day.fitNotesSets > 0 -> "Planeado + execução FitNotes"
                 day.hasPlan && day.msbActualSets > 0 -> "Planeado + execução MSB"
                 day.hasPlan -> "Planeado"
@@ -1687,8 +1693,13 @@ private fun StrengthDayCard(day: StrengthDaySummary, onOpen: (String) -> Unit) {
             if (day.hasPlan) {
                 Text("${day.plannedExercises} exercícios · ${day.plannedSetGroups} grupos prescritos")
             }
-            if (day.msbActualSets > 0 || day.fitNotesSets > 0) {
-                Text("Séries: MSB ${day.msbActualSets} · FitNotes ${day.fitNotesSets}")
+            if (day.msbActualSets > 0 || day.fitNotesSets > 0 || day.localSets > 0) {
+                Text(
+                    "Séries: Hub ${day.localSets} · MSB ${day.msbActualSets} · FitNotes ${day.fitNotesSets}"
+                )
+            }
+            if (day.localFreeExercises > 0) {
+                Text("${day.localFreeExercises} exercícios livres", style = MaterialTheme.typography.bodySmall)
             }
             if (day.exerciseNames.isNotEmpty()) {
                 Text(
