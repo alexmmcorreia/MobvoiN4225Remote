@@ -68,6 +68,8 @@ data class StrengthAnalytics(
     val trainingDays30: Int = 0,
     val sets30: Int = 0,
     val tonnage30: Double = 0.0,
+    val adherence30Pct: Double? = null,
+    val avgRpeDelta30: Double? = null,
     val pendingSyncSets: Int = 0,
 )
 
@@ -901,11 +903,74 @@ class StrengthExecutionRepository(context: Context) {
                 tonnage = c.getDouble(2)
             }
         }
+        var prescribedSets = 0
+        imported.rawQuery(
+            """
+            SELECT psg.set_count
+            FROM planned_set_group psg
+            JOIN planned_exercise pe ON pe.source_id=psg.source_exercise_id
+            WHERE pe.date>=?
+            """.trimIndent(),
+            arrayOf(cutoff),
+        ).use { cursor ->
+            while (cursor.moveToNext()) prescribedSets += if (cursor.isNull(0)) 1 else max(1, cursor.getInt(0))
+        }
+        val msbActualSets = imported.rawQuery(
+            "SELECT COUNT(*) FROM performed_set WHERE source='MSB' AND date>=?",
+            arrayOf(cutoff),
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+        val adherence = if (prescribedSets > 0) msbActualSets * 100.0 / prescribedSets else null
+
+        val plannedRpe = mutableMapOf<String, Double>()
+        imported.rawQuery(
+            """
+            SELECT psg.source_exercise_id,psg.group_index,psg.rpe
+            FROM planned_set_group psg
+            JOIN planned_exercise pe ON pe.source_id=psg.source_exercise_id
+            WHERE pe.date>=? AND psg.rpe IS NOT NULL
+            """.trimIndent(),
+            arrayOf(cutoff),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                plannedRpe["${cursor.getString(0)}:${cursor.getInt(1)}"] = cursor.getDouble(2)
+            }
+        }
+        var deltaSum = 0.0
+        var deltaCount = 0
+        imported.rawQuery(
+            """
+            SELECT source_key,rpe
+            FROM performed_set
+            WHERE source='MSB' AND date>=? AND rpe IS NOT NULL
+            """.trimIndent(),
+            arrayOf(cutoff),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val parts = cursor.getString(0).split(":")
+                if (parts.size >= 3) {
+                    val key = "${parts[0]}:${parts[1]}"
+                    val target = plannedRpe[key]
+                    if (target != null) {
+                        deltaSum += cursor.getDouble(1) - target
+                        deltaCount++
+                    }
+                }
+            }
+        }
+        val avgRpeDelta = if (deltaCount > 0) deltaSum / deltaCount else null
+
         val pending = db.readableDatabase.rawQuery(
             "SELECT COUNT(*) FROM local_set WHERE completed_at IS NOT NULL AND sync_state='pending'",
             null,
         ).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
-        return StrengthAnalytics(days, sets, tonnage, pending)
+        return StrengthAnalytics(
+            trainingDays30 = days,
+            sets30 = sets,
+            tonnage30 = tonnage,
+            adherence30Pct = adherence,
+            avgRpeDelta30 = avgRpeDelta,
+            pendingSyncSets = pending,
+        )
     }
 
     private fun loadLocalSet(key: String): LocalSetRow? {
