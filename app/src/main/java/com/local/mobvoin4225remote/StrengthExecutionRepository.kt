@@ -36,6 +36,8 @@ data class WorkoutExercisePlan(
     val restSeconds: Int,
     val mappedFitNotesName: String?,
     val mappingConfidence: Double?,
+    val lastPerformance: String?,
+    val bestRecentE1rm: Double?,
     val sets: List<WorkoutSetPlan>,
 )
 
@@ -55,11 +57,19 @@ data class MappingCandidate(
     val autoMapped: Boolean,
 )
 
+data class StrengthAnalytics(
+    val trainingDays30: Int = 0,
+    val sets30: Int = 0,
+    val tonnage30: Double = 0.0,
+    val pendingSyncSets: Int = 0,
+)
+
 data class StrengthExecutionState(
     val selectedDate: String = LocalDate.now().toString(),
     val workout: WorkoutDayPlan? = null,
     val autoMappedCount: Int = 0,
     val reviewMappings: List<MappingCandidate> = emptyList(),
+    val analytics: StrengthAnalytics = StrengthAnalytics(),
     val lastMessage: String? = null,
     val busy: Boolean = false,
 )
@@ -154,6 +164,25 @@ class StrengthExecutionRepository(context: Context) {
         refreshSync(state.value.selectedDate, "Vídeo associado à série")
     }
 
+    suspend fun acceptSuggestedMapping(msbName: String) = withContext(Dispatchers.IO) {
+        val norm = normalizeExerciseName(msbName)
+        val values = ContentValues().apply { put("confirmed", 1) }
+        db.writableDatabase.update("exercise_map", values, "msb_normalized=?", arrayOf(norm))
+        refreshSync(state.value.selectedDate, "Correspondência confirmada")
+    }
+
+    suspend fun rejectSuggestedMapping(msbName: String) = withContext(Dispatchers.IO) {
+        val norm = normalizeExerciseName(msbName)
+        val values = ContentValues().apply {
+            putNull("fit_exercise_id")
+            putNull("fit_name")
+            put("confidence", 0.0)
+            put("confirmed", -1)
+        }
+        db.writableDatabase.update("exercise_map", values, "msb_normalized=?", arrayOf(norm))
+        refreshSync(state.value.selectedDate, "Correspondência rejeitada")
+    }
+
     private fun refreshSync(date: String, message: String? = null) {
         if (!importedDbFile.exists()) {
             state.value = state.value.copy(
@@ -180,6 +209,7 @@ class StrengthExecutionRepository(context: Context) {
                 workout = workout,
                 autoMappedCount = mappings.first,
                 reviewMappings = mappings.second,
+                analytics = loadAnalytics(imported),
                 lastMessage = message,
                 busy = false,
             )
@@ -252,6 +282,10 @@ class StrengthExecutionRepository(context: Context) {
                     }
                 }
 
+                val recent = mapping?.fitName?.let { fitName ->
+                    loadRecentPerformance(imported, fitName, date)
+                }
+
                 exercises += WorkoutExercisePlan(
                     sourceId = sourceId,
                     name = name,
@@ -260,6 +294,8 @@ class StrengthExecutionRepository(context: Context) {
                     restSeconds = rest,
                     mappedFitNotesName = mapping?.fitName,
                     mappingConfidence = mapping?.confidence,
+                    lastPerformance = recent?.first,
+                    bestRecentE1rm = recent?.second,
                     sets = sets,
                 )
             }
@@ -385,9 +421,9 @@ class StrengthExecutionRepository(context: Context) {
             null,
         ).use { c ->
             while (c.moveToNext()) {
-                val confirmed = c.getInt(3) == 1
-                if (confirmed) auto++
-                else {
+                val confirmedValue = c.getInt(3)
+                if (confirmedValue == 1) auto++
+                else if (confirmedValue == 0) {
                     review += MappingCandidate(
                         msbName = c.getString(0),
                         fitNotesName = if (c.isNull(1)) null else c.getString(1),
@@ -418,6 +454,95 @@ class StrengthExecutionRepository(context: Context) {
                 confirmed = c.getInt(3) == 1,
             )
         }
+    }
+
+    private fun loadRecentPerformance(
+        imported: SQLiteDatabase,
+        fitName: String,
+        beforeDate: String,
+    ): Pair<String, Double?>? {
+        var lastDate: String? = null
+        val recentSets = mutableListOf<Triple<Double?, Int?, String>>()
+        imported.rawQuery(
+            """
+            SELECT date,weight,reps
+            FROM performed_set
+            WHERE source='FITNOTES' AND exercise_name=? AND date<?
+            ORDER BY date DESC,set_index DESC
+            LIMIT 12
+            """.trimIndent(),
+            arrayOf(fitName, beforeDate),
+        ).use { c ->
+            while (c.moveToNext()) {
+                val date = c.getString(0)
+                if (lastDate == null) lastDate = date
+                if (date == lastDate) {
+                    recentSets += Triple(
+                        if (c.isNull(1)) null else c.getDouble(1),
+                        if (c.isNull(2)) null else c.getInt(2),
+                        date,
+                    )
+                }
+            }
+        }
+        if (recentSets.isEmpty()) return null
+        val setText = recentSets.reversed().joinToString(" · ") { (w, reps, _) ->
+            when {
+                w != null && reps != null -> "${formatCompact(w)}×$reps"
+                reps != null -> "×$reps"
+                else -> "—"
+            }
+        }
+        var best: Double? = null
+        imported.rawQuery(
+            """
+            SELECT weight,reps
+            FROM performed_set
+            WHERE source='FITNOTES' AND exercise_name=? AND date<?
+              AND weight IS NOT NULL AND reps IS NOT NULL
+            ORDER BY date DESC
+            LIMIT 120
+            """.trimIndent(),
+            arrayOf(fitName, beforeDate),
+        ).use { c ->
+            while (c.moveToNext()) {
+                val w = c.getDouble(0)
+                val reps = c.getInt(1)
+                if (w > 0 && reps > 0 && reps <= 12) {
+                    val e = w * (1.0 + reps / 30.0)
+                    if (best == null || e > best!!) best = e
+                }
+            }
+        }
+        return "Última vez ($lastDate): $setText" to best
+    }
+
+    private fun loadAnalytics(imported: SQLiteDatabase): StrengthAnalytics {
+        val cutoff = LocalDate.now().minusDays(29).toString()
+        var days = 0
+        var sets = 0
+        var tonnage = 0.0
+        imported.rawQuery(
+            """
+            SELECT COUNT(DISTINCT date),COUNT(*),
+                   COALESCE(SUM(CASE WHEN weight IS NOT NULL AND reps IS NOT NULL
+                                     THEN weight*reps ELSE 0 END),0)
+            FROM performed_set
+            WHERE source='FITNOTES' AND date>=?
+            """.trimIndent(),
+            arrayOf(cutoff),
+        ).use { c ->
+            if (c.moveToFirst()) {
+                days = c.getInt(0)
+                sets = c.getInt(1)
+                tonnage = c.getDouble(2)
+            }
+        }
+        val pending = db.readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM local_set WHERE completed_at IS NOT NULL AND sync_state='pending'",
+            null,
+        ).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+        return StrengthAnalytics(days, sets, tonnage, pending)
     }
 
     private fun loadLocalSet(key: String): LocalSetRow? {
@@ -564,3 +689,8 @@ private fun ContentValues.putNullable(key: String, value: Double?) {
 private fun ContentValues.putNullable(key: String, value: String?) {
     if (value == null) putNull(key) else put(key, value)
 }
+
+
+private fun formatCompact(value: Double): String =
+    if (value % 1.0 == 0.0) value.toInt().toString()
+    else "%.1f".format(Locale.US, value)
