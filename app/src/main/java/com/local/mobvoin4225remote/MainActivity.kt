@@ -1149,6 +1149,12 @@ private fun TodayStrengthPage(
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
     var freeExerciseName by remember { mutableStateOf("") }
+    val exerciseSuggestions = remember(freeExerciseName, execution.knownExercises) {
+        if (freeExerciseName.length < 2) emptyList()
+        else execution.knownExercises
+            .filter { it.contains(freeExerciseName, ignoreCase = true) }
+            .take(6)
+    }
     var restEndMs by remember { mutableStateOf<Long?>(null) }
     var restRemaining by remember { mutableIntStateOf(0) }
 
@@ -1231,6 +1237,18 @@ private fun TodayStrengthPage(
                             singleLine = true,
                             label = { Text("Adicionar exercício livre") },
                         )
+                        if (exerciseSuggestions.isNotEmpty()) {
+                            Row(
+                                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                exerciseSuggestions.forEach { suggestion ->
+                                    TextButton(onClick = { freeExerciseName = suggestion }) {
+                                        Text(suggestion)
+                                    }
+                                }
+                            }
+                        }
                         Button(
                             onClick = {
                                 val name = freeExerciseName
@@ -1289,6 +1307,18 @@ private fun TodayStrengthPage(
                             singleLine = true,
                             label = { Text("Exercício") },
                         )
+                        if (exerciseSuggestions.isNotEmpty()) {
+                            Row(
+                                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                exerciseSuggestions.forEach { suggestion ->
+                                    TextButton(onClick = { freeExerciseName = suggestion }) {
+                                        Text(suggestion)
+                                    }
+                                }
+                            }
+                        }
                         Button(
                             onClick = {
                                 val name = freeExerciseName
