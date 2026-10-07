@@ -158,8 +158,8 @@ class MainActivity : ComponentActivity() {
         controller = TreadmillController(this)
         healthConnect = HealthConnectBridge(this)
         heartRateMonitor = HeartRateMonitor(this)
-        trainingRepository = TrainingRepository(this)
         strengthExecutionRepository = StrengthExecutionRepository(this)
+        trainingRepository = TrainingRepository(this)
         setContent {
             MaterialTheme {
                 N4225Screen(controller, healthConnect, heartRateMonitor, trainingRepository, strengthExecutionRepository)
