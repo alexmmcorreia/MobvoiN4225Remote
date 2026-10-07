@@ -14,6 +14,7 @@ import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -950,6 +951,8 @@ private fun N4225Screen(
             else -> MorePage(
                 s = state,
                 watch = watch,
+                execution = execution,
+                strengthRepository = strengthExecutionRepository,
                 c = controller,
                 heartRateMonitor = heartRateMonitor,
                 healthAvailable = healthAvailable,
@@ -1684,6 +1687,8 @@ private fun SessionCard(session: WorkoutSession, onDelete: () -> Unit, onExport:
 private fun MorePage(
     s: AppState,
     watch: HeartRateState,
+    execution: StrengthExecutionState,
+    strengthRepository: StrengthExecutionRepository,
     c: TreadmillController,
     heartRateMonitor: HeartRateMonitor,
     healthAvailable: Boolean,
@@ -1691,7 +1696,34 @@ private fun MorePage(
     requestHealthPermissions: () -> Unit,
     healthMessage: String?,
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("MyStrengthBook sync", fontWeight = FontWeight.Bold)
+                    Text(
+                        "${execution.analytics.pendingSyncSets} séries locais pendentes",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        "O write-back automático ainda não está ativo. Este export serve para validar o payload antes de ligarmos aos endpoints do MSB.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                val file = strengthRepository.exportPendingSync()
+                                shareJsonFile(context, file)
+                            }
+                        },
+                        enabled = execution.analytics.pendingSyncSets > 0,
+                    ) { Text("Exportar payload pendente") }
+                }
+            }
+        }
+
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -1974,6 +2006,20 @@ private fun createWorkoutVideoUri(context: Context, setKey: String): android.net
         "${context.packageName}.fileprovider",
         file,
     )
+}
+
+private fun shareJsonFile(context: Context, file: File) {
+    val uri = FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        file,
+    )
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "application/json"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(intent, "Partilhar payload MSB"))
 }
 
 private fun queryDisplayName(context: Context, uri: android.net.Uri): String? {
