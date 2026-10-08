@@ -36,10 +36,13 @@ jobs:
       - name: Build Active 2 ZAB
         run: npm run build
 
+      - name: Locate Active 2 package
+        run: find . -type f -name "*.zab" -print
+
       - name: Upload Active 2 package
         uses: actions/upload-artifact@v4
         with:
           name: TrainingHub-Active2
-          path: watch/dist/*.zab
+          path: watch/**/*.zab
           if-no-files-found: error
           retention-days: 90
