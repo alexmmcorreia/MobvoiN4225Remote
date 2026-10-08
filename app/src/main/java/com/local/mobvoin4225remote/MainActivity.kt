@@ -447,6 +447,10 @@ class TreadmillController(private val context: Context) {
         }
     }
 
+    fun reloadHistory() {
+        state.update { it.copy(history = sessionStore.load()) }
+    }
+
     fun close() {
         disconnect()
     }
@@ -1102,6 +1106,7 @@ private fun N4225Screen(
                             strengthExecutionRepository.refresh()
                             strengthAnalyticsRepository.refresh()
                             personalIntegrationRepository.refresh()
+                            controller.reloadHistory()
                         }
                         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                             restoreMessage = result.fold(
