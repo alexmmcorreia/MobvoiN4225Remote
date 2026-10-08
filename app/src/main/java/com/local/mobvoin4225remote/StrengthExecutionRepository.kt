@@ -155,7 +155,12 @@ class StrengthExecutionRepository(context: Context) {
             putNullable("rpe", rpe)
             putNullable("comment", comment?.takeIf { it.isNotBlank() })
             putNullable("video_uri", existing?.videoUri)
-            val currentHr = WatchBridgeRuntime.state.value.lastHeartRateBpm
+            val watchState = WatchBridgeRuntime.state.value
+            val currentHr = watchState.lastHeartRateBpm?.takeIf {
+                watchState.paired &&
+                    watchState.lastSeenMs != null &&
+                    System.currentTimeMillis() - watchState.lastSeenMs < 15_000L
+            }
             putNullable("heart_rate_bpm", currentHr)
             putNullable("peak_heart_rate_bpm", currentHr)
             put("completed_at", System.currentTimeMillis())
@@ -193,6 +198,8 @@ class StrengthExecutionRepository(context: Context) {
             putNullable("rpe", current?.rpe)
             putNullable("comment", current?.comment)
             put("video_uri", uri)
+            putNullable("heart_rate_bpm", current?.heartRateBpm)
+            putNullable("peak_heart_rate_bpm", current?.peakHeartRateBpm)
             if (current?.completedAt != null) put("completed_at", current.completedAt)
             put("sync_state", if (set.sourceExerciseId.startsWith("free:")) "local_only" else "pending")
         }
