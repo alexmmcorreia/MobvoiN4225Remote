@@ -509,6 +509,46 @@ function collectDailyContext() {
   }
 }
 
+function collectDetailedHistory() {
+  if (!page) return
+  const payload = {
+    date: localDateKey(),
+    capturedAtMs: Date.now(),
+    heartRateMinute: [],
+    stressMinute: [],
+    bodyTemperature5Min: [],
+    spo2Last24h: [],
+    sleepStages: [],
+  }
+
+  try {
+    const values = new HeartRate().getToday()
+    if (values && values.length) payload.heartRateMinute = values
+  } catch (_e) {}
+
+  try {
+    const values = new Stress().getToday()
+    if (values && values.length) payload.stressMinute = values
+  } catch (_e) {}
+
+  try {
+    const values = new BodyTemperature().getToday()
+    if (values && values.length) payload.bodyTemperature5Min = values
+  } catch (_e) {}
+
+  try {
+    const values = new BloodOxygen().getLastDay()
+    if (values && values.length) payload.spo2Last24h = values
+  } catch (_e) {}
+
+  try {
+    const values = new Sleep().getStage()
+    if (values && values.length) payload.sleepStages = values
+  } catch (_e) {}
+
+  page.request({ method: 'HISTORY', params: payload }).catch(() => {})
+}
+
 function startHeartRate() {
   try {
     hrSensor = new HeartRate()
@@ -544,6 +584,7 @@ Page(
       render()
       startHeartRate()
       collectDailyContext()
+      collectDetailedHistory()
       refreshState(true)
       pollTimer = setInterval(() => refreshState(false), 3000)
       tickTimer = setInterval(() => {
