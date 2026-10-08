@@ -95,8 +95,14 @@ class StrengthExecutionRepository(context: Context) {
     private val db = ExecutionDb(appContext)
     private val importedDbFile: File get() = appContext.getDatabasePath("training_hub.db")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val runtimePrefs = appContext.getSharedPreferences("strength_runtime", Context.MODE_PRIVATE)
 
-    val state = MutableStateFlow(StrengthExecutionState(busy = true))
+    val state = MutableStateFlow(
+        StrengthExecutionState(
+            restEndMs = loadPersistedRestEnd(),
+            busy = true,
+        )
+    )
 
     init {
         // Open once so lightweight schema migrations finish before other repositories read this DB.
@@ -162,13 +168,17 @@ class StrengthExecutionRepository(context: Context) {
             SQLiteDatabase.CONFLICT_REPLACE,
         )
         refreshSync(state.value.selectedDate, "Série gravada · descanso ${formatSeconds(rest)}")
-        state.value = state.value.copy(restEndMs = System.currentTimeMillis() + rest * 1000L)
+        val restEnd = System.currentTimeMillis() + rest * 1000L
+        persistRestEnd(restEnd)
+        state.value = state.value.copy(restEndMs = restEnd)
         rest
     }
 
     suspend fun undoSet(setKey: String) = withContext(Dispatchers.IO) {
         db.writableDatabase.delete("local_set", "set_key=?", arrayOf(setKey))
+        persistRestEnd(null)
         refreshSync(state.value.selectedDate, "Série anulada")
+        state.value = state.value.copy(restEndMs = null)
     }
 
     suspend fun attachVideo(set: WorkoutSetPlan, uri: String) = withContext(Dispatchers.IO) {
@@ -216,11 +226,28 @@ class StrengthExecutionRepository(context: Context) {
 
     fun extendRest(seconds: Int = 30) {
         val base = state.value.restEndMs ?: System.currentTimeMillis()
-        state.value = state.value.copy(restEndMs = base + seconds * 1000L)
+        val end = base + seconds * 1000L
+        persistRestEnd(end)
+        state.value = state.value.copy(restEndMs = end)
     }
 
     fun clearRest() {
+        persistRestEnd(null)
         state.value = state.value.copy(restEndMs = null)
+    }
+
+    private fun loadPersistedRestEnd(): Long? {
+        val value = runtimePrefs.getLong("rest_end_ms", 0L)
+        return if (value > System.currentTimeMillis()) value else {
+            runtimePrefs.edit().remove("rest_end_ms").apply()
+            null
+        }
+    }
+
+    private fun persistRestEnd(value: Long?) {
+        val edit = runtimePrefs.edit()
+        if (value == null) edit.remove("rest_end_ms") else edit.putLong("rest_end_ms", value)
+        edit.apply()
     }
 
     suspend fun addFreeExercise(
