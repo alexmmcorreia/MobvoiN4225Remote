@@ -42,8 +42,15 @@ data class DailyBodyContext(
     val syncedAtMs: Long = 0L,
 )
 
+data class IntegrationImportStatus(
+    val source: String,
+    val kind: String,
+    val importedAtMs: Long,
+    val records: Int,
+)
+
 class PersonalMetricsStore(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "personal_metrics.db", null, 3) {
+    SQLiteOpenHelper(context.applicationContext, "personal_metrics.db", null, 4) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -82,11 +89,13 @@ class PersonalMetricsStore(context: Context) :
         )
         createFutureSourceTables(db)
         createWatchHistoryTables(db)
+        createIntegrationTables(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createFutureSourceTables(db)
         if (oldVersion < 3) createWatchHistoryTables(db)
+        if (oldVersion < 4) createIntegrationTables(db)
     }
 
     private fun createFutureSourceTables(db: SQLiteDatabase) {
@@ -121,6 +130,21 @@ class PersonalMetricsStore(context: Context) :
                 weight_trend_kg REAL,
                 raw_json TEXT,
                 PRIMARY KEY(source,day)
+            )
+            """.trimIndent()
+        )
+    }
+
+    private fun createIntegrationTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS integration_import(
+                source TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                imported_at_ms INTEGER NOT NULL,
+                records INTEGER NOT NULL,
+                raw_meta TEXT,
+                PRIMARY KEY(source,kind)
             )
             """.trimIndent()
         )
@@ -391,6 +415,51 @@ class PersonalMetricsStore(context: Context) :
         }
 
         return stored
+    }
+
+    @Synchronized
+    fun recordIntegrationImport(
+        source: String,
+        kind: String,
+        records: Int,
+        rawMeta: String? = null,
+    ) {
+        val values = ContentValues().apply {
+            put("source", source)
+            put("kind", kind)
+            put("imported_at_ms", System.currentTimeMillis())
+            put("records", records)
+            if (rawMeta == null) putNull("raw_meta") else put("raw_meta", rawMeta)
+        }
+        writableDatabase.insertWithOnConflict(
+            "integration_import",
+            null,
+            values,
+            SQLiteDatabase.CONFLICT_REPLACE,
+        )
+    }
+
+    @Synchronized
+    fun integrationStatuses(): List<IntegrationImportStatus> {
+        val out = mutableListOf<IntegrationImportStatus>()
+        readableDatabase.rawQuery(
+            """
+            SELECT source,kind,imported_at_ms,records
+            FROM integration_import
+            ORDER BY imported_at_ms DESC
+            """.trimIndent(),
+            null,
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += IntegrationImportStatus(
+                    source = cursor.getString(0),
+                    kind = cursor.getString(1),
+                    importedAtMs = cursor.getLong(2),
+                    records = cursor.getInt(3),
+                )
+            }
+        }
+        return out
     }
 
     @Synchronized
