@@ -1877,6 +1877,12 @@ private fun MorePage(
                         fontWeight = FontWeight.Bold,
                     )
                     watchBridge.lastHeartRateBpm?.let { Text("FC do relógio: $it bpm") }
+                    if (watchBridge.lastHistorySamples > 0) {
+                        Text(
+                            "Último sync detalhado: ${watchBridge.lastHistorySamples} amostras/eventos",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     watchBridge.dailyContext?.let { daily ->
                         Text(
                             buildList {
