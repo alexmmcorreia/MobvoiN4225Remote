@@ -37,6 +37,28 @@ object TrainingHubBackup {
         "personal_metrics.db",
     )
 
+    fun safetySnapshot(context: Context, reason: String): File {
+        val original = export(context)
+        val safeReason = reason.lowercase(Locale.ROOT)
+            .replace(Regex("[^a-z0-9]+"), "_")
+            .trim('_')
+            .ifBlank { "snapshot" }
+        val target = File(
+            original.parentFile,
+            "training_hub_safety_${safeReason}_${System.currentTimeMillis()}.zip",
+        )
+        if (!original.renameTo(target)) {
+            original.copyTo(target, overwrite = true)
+            original.delete()
+        }
+        target.parentFile?.listFiles()
+            ?.filter { it.name.startsWith("training_hub_safety_") && it.extension == "zip" }
+            ?.sortedByDescending { it.lastModified() }
+            ?.drop(5)
+            ?.forEach { it.delete() }
+        return target
+    }
+
     fun export(context: Context): File {
         val root = JSONObject().apply {
             put("schemaVersion", 1)
@@ -169,7 +191,7 @@ object TrainingHubBackup {
         require(root.optString("app") == "Training Hub") { "Backup não pertence ao Training Hub." }
         require(root.optInt("schemaVersion", 0) == 1) { "Versão de backup não suportada." }
 
-        val safety = export(context)
+        val safety = safetySnapshot(context, "before_restore")
         val databases = root.optJSONObject("databases") ?: JSONObject()
         var tableCount = 0
         var rowCount = 0
