@@ -55,6 +55,7 @@ object TrainingHubBackup {
                 SQLiteDatabase.OPEN_READONLY,
             )
             try {
+                requireQuickCheck(db, name)
                 databases.put(name, exportDatabase(db))
             } finally {
                 db.close()
@@ -217,6 +218,7 @@ object TrainingHubBackup {
                 } finally {
                     db.endTransaction()
                 }
+                requireQuickCheck(db, name)
             } finally {
                 db.close()
             }
@@ -252,6 +254,15 @@ object TrainingHubBackup {
             }
         }
         error("ZIP sem training_hub_backup.json.")
+    }
+
+    private fun requireQuickCheck(db: SQLiteDatabase, name: String) {
+        val result = db.rawQuery("PRAGMA quick_check", null).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else "unknown"
+        }
+        require(result.equals("ok", ignoreCase = true)) {
+            "Falha de integridade em $name: $result"
+        }
     }
 
     private fun tableExists(db: SQLiteDatabase, table: String): Boolean =
