@@ -76,3 +76,44 @@ This batch moves the project from a treadmill remote toward a local-first traini
 - Generic source-agnostic metrics store prepared for future scale and nutrition integrations.
 
 The Active 2 companion is built separately by the **Build Active 2 Companion** GitHub Actions workflow and produces the `TrainingHub-Active2` artifact.
+
+
+## v0.8
+
+This batch advances three long-term foundations without requiring hardware testing.
+
+### Historical strength analytics
+
+- dedicated **Progresso** tab
+- canonical execution history that avoids double-counting MSB and FitNotes
+- all-time and 30-day sets/tonnage
+- weekly workload summaries
+- per-exercise training days, sets, reps and tonnage
+- max load and estimated e1RM trends
+- estimated exposures at >=80%, >=85% and >=90% of the best e1RM
+- recent estimated PR events
+- detailed recent session history per exercise
+
+### Local data durability
+
+- full ZIP export and validated restore
+- SQLite integrity checks during backup/restore
+- non-destructive database migration policy
+- rolling safety snapshots before MSB/FitNotes replacement and restore
+- app-owned workout videos included in backups
+- externally selected set videos copied into app-owned storage first
+- restore creates a safety snapshot when possible and can still recover if the current DB is already damaged
+
+### Scales and nutrition / MacroFactor foundation
+
+- source-agnostic body measurement table
+- source-agnostic daily nutrition table
+- pluggable personal-data adapter interface
+- canonical JSON v1 import contract
+- integration import status tracking
+- latest body/nutrition context shown in Progress when data exists
+
+See:
+
+- `docs/PERSONAL_DATA_SCHEMA.md`
+- `docs/BACKUP_AND_RECOVERY.md`
