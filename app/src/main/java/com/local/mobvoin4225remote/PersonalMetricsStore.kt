@@ -43,7 +43,7 @@ data class DailyBodyContext(
 )
 
 class PersonalMetricsStore(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "personal_metrics.db", null, 2) {
+    SQLiteOpenHelper(context.applicationContext, "personal_metrics.db", null, 3) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -81,10 +81,12 @@ class PersonalMetricsStore(context: Context) :
             """.trimIndent()
         )
         createFutureSourceTables(db)
+        createWatchHistoryTables(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createFutureSourceTables(db)
+        if (oldVersion < 3) createWatchHistoryTables(db)
     }
 
     private fun createFutureSourceTables(db: SQLiteDatabase) {
@@ -122,6 +124,23 @@ class PersonalMetricsStore(context: Context) :
             )
             """.trimIndent()
         )
+    }
+
+    private fun createWatchHistoryTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS sleep_stage(
+                source TEXT NOT NULL,
+                day TEXT NOT NULL,
+                stage INTEGER NOT NULL,
+                start_minute INTEGER NOT NULL,
+                stop_minute INTEGER NOT NULL,
+                raw_json TEXT,
+                PRIMARY KEY(source,day,stage,start_minute,stop_minute)
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_sleep_stage_day ON sleep_stage(day)")
     }
 
     @Synchronized
@@ -253,6 +272,125 @@ class PersonalMetricsStore(context: Context) :
             SQLiteDatabase.CONFLICT_REPLACE,
         )
         return context
+    }
+
+    @Synchronized
+    fun saveWatchHistory(payload: JSONObject): Int {
+        val date = payload.optString("date").takeIf { it.isNotBlank() }
+            ?: LocalDate.now().toString()
+        val zone = java.time.ZoneId.systemDefault()
+        val dayStart = LocalDate.parse(date).atStartOfDay(zone)
+        var stored = 0
+
+        fun saveSeries(
+            array: org.json.JSONArray?,
+            metric: String,
+            unit: String,
+            stepMinutes: Long,
+            valid: (Double) -> Boolean,
+        ) {
+            if (array == null) return
+            for (i in 0 until array.length()) {
+                val item = array.opt(i)
+                val value = when (item) {
+                    is Number -> item.toDouble()
+                    is JSONObject -> when {
+                        item.has("value") -> item.optDouble("value", Double.NaN)
+                        item.has("stress") -> item.optDouble("stress", Double.NaN)
+                        else -> Double.NaN
+                    }
+                    else -> Double.NaN
+                }
+                if (!value.isFinite() || !valid(value)) continue
+                val timestamp = dayStart.plusMinutes(i * stepMinutes)
+                    .toInstant().toEpochMilli()
+                recordMetric(
+                    source = "AMAZFIT_ACTIVE_2",
+                    metric = metric,
+                    value = value,
+                    unit = unit,
+                    timestampMs = timestamp,
+                )
+                stored++
+            }
+        }
+
+        saveSeries(
+            payload.optJSONArray("heartRateMinute"),
+            "heart_rate_history",
+            "bpm",
+            1L,
+        ) { it in 20.0..250.0 }
+
+        saveSeries(
+            payload.optJSONArray("stressMinute"),
+            "stress_history",
+            "score",
+            1L,
+        ) { it > 0.0 }
+
+        saveSeries(
+            payload.optJSONArray("bodyTemperature5Min"),
+            "skin_temperature_history",
+            "celsius",
+            5L,
+        ) { it in 20.0..45.0 }
+
+        payload.optJSONArray("spo2Last24h")?.let { array ->
+            val capturedAtMs = payload.optLong("capturedAtMs", System.currentTimeMillis())
+            val anchor = java.time.Instant.ofEpochMilli(capturedAtMs)
+                .atZone(zone)
+                .withMinute(0)
+                .withSecond(0)
+                .withNano(0)
+            val count = array.length()
+            for (i in 0 until count) {
+                val value = array.optDouble(i, Double.NaN)
+                if (!value.isFinite() || value !in 50.0..100.0) continue
+                val hoursBack = (count - 1 - i).toLong()
+                val timestamp = anchor.minusHours(hoursBack).toInstant().toEpochMilli()
+                recordMetric(
+                    source = "AMAZFIT_ACTIVE_2",
+                    metric = "spo2_hourly",
+                    value = value,
+                    unit = "percent",
+                    timestampMs = timestamp,
+                )
+                stored++
+            }
+        }
+
+        payload.optJSONArray("sleepStages")?.let { stages ->
+            writableDatabase.delete(
+                "sleep_stage",
+                "source=? AND day=?",
+                arrayOf("AMAZFIT_ACTIVE_2", date),
+            )
+            for (i in 0 until stages.length()) {
+                val stage = stages.optJSONObject(i) ?: continue
+                val model = stage.optInt("model", -1)
+                val start = stage.optInt("start", -1)
+                val stop = stage.optInt("stop", -1)
+                if (model < 0 || start < 0 || stop < 0) continue
+                val values = ContentValues().apply {
+                    put("source", "AMAZFIT_ACTIVE_2")
+                    put("day", date)
+                    put("stage", model)
+                    put("start_minute", start)
+                    put("stop_minute", stop)
+                    put("raw_json", stage.toString())
+                }
+                writableDatabase.insertWithOnConflict(
+                    "sleep_stage",
+                    null,
+                    values,
+                    SQLiteDatabase.CONFLICT_REPLACE,
+                )
+                stored++
+            }
+        }
+
+        return stored
     }
 
     @Synchronized
