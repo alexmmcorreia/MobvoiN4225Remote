@@ -28,6 +28,7 @@ import java.net.Socket
 import java.security.SecureRandom
 
 const val WATCH_BRIDGE_PORT = 18765
+const val WATCH_PROTOCOL_VERSION = 2
 private const val WATCH_CHANNEL_ID = "training_hub_watch_bridge"
 private const val WATCH_NOTIFICATION_ID = 2407
 
@@ -37,6 +38,7 @@ data class WatchBridgeState(
     val lastSeenMs: Long? = null,
     val lastHeartRateBpm: Int? = null,
     val dailyContext: DailyBodyContext? = null,
+    val demoMode: Boolean = false,
     val lastError: String? = null,
 )
 
@@ -66,12 +68,21 @@ object WatchBridgeRuntime {
         context.stopService(Intent(context, WatchBridgeService::class.java))
         state.value = state.value.copy(running = false, paired = false)
     }
+
+    fun setDemoMode(context: Context, enabled: Boolean) {
+        WatchBridgeConfig.setDemoMode(context, enabled)
+        WatchDemoRuntime.reset()
+        state.value = state.value.copy(demoMode = enabled)
+    }
+
+    fun isDemoMode(context: Context): Boolean = WatchBridgeConfig.isDemoMode(context)
 }
 
 private object WatchBridgeConfig {
     private const val PREFS = "watch_bridge"
     private const val KEY_ENABLED = "enabled"
     private const val KEY_PAIRING = "pairing_code"
+    private const val KEY_DEMO = "demo_mode"
 
     fun isEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -82,12 +93,112 @@ private object WatchBridgeConfig {
             .edit().putBoolean(KEY_ENABLED, enabled).apply()
     }
 
+    fun isDemoMode(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_DEMO, false)
+
+    fun setDemoMode(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_DEMO, enabled).apply()
+    }
+
     fun pairingCode(context: Context): String {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         prefs.getString(KEY_PAIRING, null)?.let { return it }
         val code = (SecureRandom().nextInt(900_000) + 100_000).toString()
         prefs.edit().putString(KEY_PAIRING, code).apply()
         return code
+    }
+}
+
+private object WatchDemoRuntime {
+    private val exercises = listOf(
+        Triple("Paused Sumo Deadlift", 215.0, 2),
+        Triple("Bench Press", 120.0, 4),
+        Triple("Chest Supported Row", 75.0, 8),
+    )
+    private var exerciseIndex = 0
+    private var setIndex = 0
+    private var completedSets = 0
+    private var restEndMs: Long? = null
+
+    fun reset() {
+        exerciseIndex = 0
+        setIndex = 0
+        completedSets = 0
+        restEndMs = null
+    }
+
+    fun action(action: String, payload: JSONObject) {
+        when (action) {
+            "COMPLETE_CURRENT" -> {
+                if (exerciseIndex >= exercises.size) return
+                completedSets++
+                setIndex++
+                if (setIndex >= 4) {
+                    exerciseIndex++
+                    setIndex = 0
+                }
+                restEndMs = System.currentTimeMillis() + 90_000L
+            }
+            "EXTEND_REST" -> {
+                val base = restEndMs ?: System.currentTimeMillis()
+                restEndMs = base + payload.optInt("seconds", 30).coerceIn(5, 600) * 1000L
+            }
+            "SKIP_REST" -> restEndMs = null
+            "UNDO_LAST_SET" -> {
+                if (completedSets <= 0) return
+                if (setIndex == 0 && exerciseIndex > 0) {
+                    exerciseIndex--
+                    setIndex = 3
+                } else if (setIndex > 0) {
+                    setIndex--
+                }
+                completedSets--
+                restEndMs = null
+            }
+        }
+    }
+
+    fun state(): JSONObject {
+        val complete = exerciseIndex >= exercises.size
+        val current = if (complete) null else exercises[exerciseIndex]
+        val next = if (complete) null else exercises.getOrNull(exerciseIndex + 1)
+        val rest = restEndMs?.let {
+            ((it - System.currentTimeMillis() + 999L) / 1000L).toInt().coerceAtLeast(0)
+        } ?: 0
+        if (rest == 0) restEndMs = null
+        return JSONObject().apply {
+            put("ok", true)
+            put("protocolVersion", WATCH_PROTOCOL_VERSION)
+            put("demoMode", true)
+            put("date", java.time.LocalDate.now().toString())
+            put("busy", false)
+            put("complete", complete)
+            put("completedSets", completedSets)
+            put("totalSets", exercises.size * 4)
+            put("program", 99)
+            put("week", 1)
+            put("session", 1)
+            put("exerciseIndex", if (complete) exercises.size - 1 else exerciseIndex)
+            put("exerciseCount", exercises.size)
+            putNullable("exerciseName", current?.first)
+            putNullable("nextExerciseName", next?.first)
+            put("setIndex", if (complete) 3 else setIndex)
+            put("setCount", 4)
+            putNullable("load", current?.second)
+            putNullable("reps", current?.third)
+            put("rpe", 7.0)
+            put("restRemainingSec", rest)
+            put("pendingSyncSets", 0)
+            put("watchHeartRateBpm", 118)
+            put("cardio", JSONObject().apply {
+                put("connected", false)
+                put("active", false)
+                put("paused", false)
+                put("durationSec", 0)
+            })
+        }
     }
 }
 
@@ -103,6 +214,7 @@ class WatchBridgeService : Service() {
         WatchBridgeRuntime.state.value = WatchBridgeRuntime.state.value.copy(
             running = true,
             dailyContext = metrics.latestWatchDaily(),
+            demoMode = WatchBridgeConfig.isDemoMode(this),
             lastError = null,
         )
         startForeground(WATCH_NOTIFICATION_ID, buildNotification())
@@ -223,6 +335,7 @@ class WatchBridgeService : Service() {
                         put("ok", true)
                         put("service", "Training Hub")
                         put("version", 1)
+                        put("protocolVersion", WATCH_PROTOCOL_VERSION)
                     },
                 )
                 return
@@ -250,11 +363,21 @@ class WatchBridgeService : Service() {
 
             when {
                 method == "GET" && path == "/v1/watch/state" -> {
-                    respond(client, 200, buildWorkoutState(repository()))
+                    val result = if (WatchBridgeConfig.isDemoMode(this)) {
+                        WatchDemoRuntime.state()
+                    } else {
+                        buildWorkoutState(repository())
+                    }
+                    respond(client, 200, result)
                 }
 
                 method == "POST" && path == "/v1/watch/action" -> {
-                    val result = runBlocking { applyWatchAction(repository(), payload) }
+                    val result = if (WatchBridgeConfig.isDemoMode(this)) {
+                        WatchDemoRuntime.action(payload.optString("action").uppercase(), payload)
+                        WatchDemoRuntime.state()
+                    } else {
+                        runBlocking { applyWatchAction(repository(), payload) }
+                    }
                     respond(client, 200, result)
                 }
 
@@ -321,6 +444,21 @@ class WatchBridgeService : Service() {
             }
             "EXTEND_REST" -> repository.extendRest(payload.optInt("seconds", 30).coerceIn(5, 600))
             "SKIP_REST" -> repository.clearRest()
+            "UNDO_LAST_SET" -> {
+                val ordered = repository.state.value.workout
+                    ?.exercises
+                    ?.flatMap { it.sets }
+                    .orEmpty()
+                val firstIncomplete = ordered.indexOfFirst { !it.completed }
+                val candidate = when {
+                    ordered.isEmpty() -> null
+                    firstIncomplete > 0 -> ordered[firstIncomplete - 1]
+                    firstIncomplete == -1 -> ordered.lastOrNull()
+                    else -> null
+                }
+                candidate?.let { repository.undoSet(it.key) }
+                repository.clearRest()
+            }
             "TREADMILL_SPEED_DELTA" -> {
                 val delta = payload.optDouble("delta", 0.0).coerceIn(-2.0, 2.0)
                 TrainingHubRuntime.treadmillController?.changeSpeed(delta)
@@ -360,6 +498,8 @@ class WatchBridgeService : Service() {
 
         return JSONObject().apply {
             put("ok", true)
+            put("protocolVersion", WATCH_PROTOCOL_VERSION)
+            put("demoMode", false)
             put(
                 "cardio",
                 JSONObject().apply {
