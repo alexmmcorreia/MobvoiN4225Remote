@@ -1966,11 +1966,163 @@ private fun SessionCard(session: WorkoutSession, onDelete: () -> Unit, onExport:
 }
 
 @Composable
+private fun AnalyticsPage(
+    analytics: StrengthAnalyticsViewState,
+    repository: StrengthAnalyticsRepository,
+) {
+    var query by remember { mutableStateOf("") }
+    val visible = remember(query, analytics.exercises) {
+        if (query.isBlank()) analytics.exercises.take(30)
+        else analytics.exercises.filter {
+            it.name.contains(query, ignoreCase = true) ||
+                (it.category?.contains(query, ignoreCase = true) == true)
+        }.take(30)
+    }
+
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Progresso de força", fontWeight = FontWeight.Bold)
+                    if (analytics.busy) Text("A calcular histórico…")
+                    analytics.error?.let { Text("Erro: $it") }
+                    val o = analytics.overview
+                    if (o.sets > 0) {
+                        Text("${o.trainingDays} dias · ${o.sets} séries · ${o.exercises} exercícios")
+                        Text("%.0f kg de tonelagem total".format(Locale.US, o.tonnageKg))
+                        Text(
+                            "Últimos 30 dias: ${o.sets30} séries · %.0f kg".format(
+                                Locale.US,
+                                o.tonnage30Kg,
+                            )
+                        )
+                        Text(
+                            "${o.firstDate ?: "—"} → ${o.lastDate ?: "—"}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (analytics.sourceNote.isNotBlank()) {
+                        Text(analytics.sourceNote, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+
+        if (analytics.weekly.isNotEmpty()) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("Últimas semanas", fontWeight = FontWeight.Bold)
+                        analytics.weekly.takeLast(8).reversed().forEach { week ->
+                            Text(
+                                "${week.week} · ${week.trainingDays} dias · ${week.sets} séries · " +
+                                    "%.0f kg".format(Locale.US, week.tonnageKg),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Procurar exercício") },
+            )
+        }
+
+        analytics.selectedSummary?.let { summary ->
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(summary.name, fontWeight = FontWeight.Bold)
+                            TextButton(onClick = { repository.selectExercise(null) }) { Text("Fechar") }
+                        }
+                        summary.category?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                        Text("${summary.trainingDays} dias · ${summary.sets} séries · ${summary.totalReps} reps")
+                        Text("Volume total: %.0f kg".format(Locale.US, summary.tonnageKg))
+                        summary.maxWeightKg?.let {
+                            Text("Maior carga: %.1f kg".format(Locale.US, it))
+                        }
+                        summary.bestE1rmKg?.let {
+                            Text("Melhor e1RM estimado: %.1f kg".format(Locale.US, it))
+                        }
+                        summary.bestE1rm30Kg?.let {
+                            Text("Melhor e1RM 30d: %.1f kg".format(Locale.US, it))
+                        }
+                        Text(
+                            "Exposições vs melhor e1RM: ≥80% ${summary.exposure80} · " +
+                                "≥85% ${summary.exposure85} · ≥90% ${summary.exposure90}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Text(
+                            "${summary.firstDate} → ${summary.lastDate} · ${summary.prCount} progressões de PR estimado",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+
+            item { Text("Sessões recentes", fontWeight = FontWeight.Bold) }
+            items(analytics.selectedTrend, key = { it.date }) { point ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(point.date, fontWeight = FontWeight.Bold)
+                        Text(
+                            "${point.sets} séries · %.0f kg volume".format(Locale.US, point.volumeKg)
+                        )
+                        val bits = buildList {
+                            point.topWeightKg?.let { add("top %.1f kg".format(Locale.US, it)) }
+                            point.bestE1rmKg?.let { add("e1RM %.1f".format(Locale.US, it)) }
+                            point.averageRpe?.let { add("RPE %.1f".format(Locale.US, it)) }
+                        }
+                        if (bits.isNotEmpty()) {
+                            Text(bits.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+        }
+
+        if (analytics.selectedSummary == null) {
+            item { Text("Exercícios", fontWeight = FontWeight.Bold) }
+            items(visible, key = { it.name }) { exercise ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(exercise.name, fontWeight = FontWeight.Bold)
+                        Text(
+                            "${exercise.trainingDays} dias · ${exercise.sets} séries · " +
+                                "%.0f kg".format(Locale.US, exercise.tonnageKg),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        val metrics = buildList {
+                            exercise.maxWeightKg?.let { add("máx %.1f kg".format(Locale.US, it)) }
+                            exercise.bestE1rmKg?.let { add("e1RM %.1f".format(Locale.US, it)) }
+                            if (exercise.sets30 > 0) add("${exercise.sets30} séries/30d")
+                        }
+                        if (metrics.isNotEmpty()) Text(metrics.joinToString(" · "))
+                        TextButton(onClick = { repository.selectExercise(exercise.name) }) {
+                            Text("Ver histórico")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun MorePage(
     s: AppState,
     watch: HeartRateState,
     execution: StrengthExecutionState,
     watchBridge: WatchBridgeState,
+    personalImports: PersonalImportState,
     strengthRepository: StrengthExecutionRepository,
     c: TreadmillController,
     heartRateMonitor: HeartRateMonitor,
@@ -1978,6 +2130,10 @@ private fun MorePage(
     healthGranted: Boolean,
     requestHealthPermissions: () -> Unit,
     healthMessage: String?,
+    restoreMessage: String?,
+    importPersonalData: () -> Unit,
+    restoreBackup: () -> Unit,
+    openCardio: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -2062,16 +2218,46 @@ private fun MorePage(
                         "Exporta treino, mappings, histórico importado, métricas do relógio e cardio. Códigos de emparelhamento e endereços BLE ficam de fora.",
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    Button(
-                        onClick = {
-                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                val file = TrainingHubBackup.export(context)
-                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                    shareBackupFile(context, file)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Button(
+                            onClick = {
+                                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                    val file = TrainingHubBackup.export(context)
+                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                        shareBackupFile(context, file)
+                                    }
                                 }
                             }
-                        }
-                    ) { Text("Exportar backup completo") }
+                        ) { Text("Exportar") }
+                        OutlinedButton(onClick = restoreBackup) { Text("Restaurar") }
+                    }
+                    restoreMessage?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("Balanças e MacroFactor", fontWeight = FontWeight.Bold)
+                    Text(
+                        "A camada canónica de peso/composição corporal e nutrição já está preparada. Os adapters específicos entram depois, sem alterar o resto da app.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    personalImports.statuses.take(6).forEach { status ->
+                        Text(
+                            "${status.source} · ${status.kind}: ${status.records} registos",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Button(onClick = importPersonalData, enabled = !personalImports.busy) {
+                        Text("Importar JSON canónico")
+                    }
+                    personalImports.lastMessage?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
         }
@@ -2151,6 +2337,7 @@ private fun MorePage(
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Text("Passadeira", fontWeight = FontWeight.Bold)
+                    Button(onClick = openCardio) { Text("Abrir controlo") }
                     Text("Estado: ${if (s.controlReady) "Ligada e pronta" else s.connection}")
                     Text("Dispositivo: ${s.connectedName ?: "—"}")
                     Text("Endereço: ${s.savedAddress ?: "—"}")
