@@ -1,6 +1,6 @@
 {
   "name": "training-hub-active2",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Training Hub companion for Amazfit Active 2 Round",
   "main": "app.js",

@@ -1,4 +1,4 @@
-# Mobvoi N4225 Remote
+# Training Hub
 
 Android remote for **Mobvoi Home N4225** treadmills exposing the standard Bluetooth LE **FTMS** service.
 
@@ -58,3 +58,21 @@ This batch moves the project from a treadmill remote toward a local-first traini
 - Standalone free-workout mode, including FitNotes exercise autocomplete and extra sets.
 - Local Training Hub execution merged back into calendar history.
 - N4225 remains available under Cardio instead of dominating the app.
+
+
+## v0.7 — Active 2 deep integration
+
+- Dedicated Amazfit Active 2 Round Zepp OS companion.
+- Watch-native current exercise, set number, prescribed load/reps and editable RPE.
+- Complete the current set from the watch.
+- Automatic rest timer on the watch with +30 s and Skip.
+- Haptic feedback for set completion and rest flow.
+- Live watch heart rate sent to Training Hub and stored in the canonical metrics database.
+- Daily watch context import: resting HR, sleep score/duration/deep sleep, steps, stress, SpO2 and skin temperature where the device/API returns them.
+- Dedicated phone bridge bound to localhost only, protected by a six-digit pairing code.
+- Foreground Android bridge keeps watch control available while Training Hub is backgrounded.
+- Active treadmill sessions can be controlled from the watch: ±0.5 km/h, Pause/Resume and Stop.
+- No remote treadmill Start is exposed from an idle state.
+- Generic source-agnostic metrics store prepared for future scale and nutrition integrations.
+
+The Active 2 companion is built separately by the **Build Active 2 Companion** GitHub Actions workflow and produces the `TrainingHub-Active2` artifact.

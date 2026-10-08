@@ -5,8 +5,8 @@
     "appName": "Training Hub",
     "appType": "app",
     "version": {
-      "code": 1,
-      "name": "0.1.0"
+      "code": 2,
+      "name": "0.2.0"
     },
     "icon": "icon.png",
     "vender": "Training Hub",
@@ -44,14 +44,38 @@
         }
       },
       "platforms": [
-        { "name": "active-2-round", "deviceSource": 8913152 },
-        { "name": "active-2-round", "deviceSource": 8913153 },
-        { "name": "active-2-round", "deviceSource": 8913155 },
-        { "name": "active-2-round", "deviceSource": 8913159 },
-        { "name": "active-2-round", "deviceSource": 10092800 },
-        { "name": "active-2-round", "deviceSource": 10092801 },
-        { "name": "active-2-round", "deviceSource": 10092803 },
-        { "name": "active-2-round", "deviceSource": 10092807 }
+        {
+          "name": "active-2-round",
+          "deviceSource": 8913152
+        },
+        {
+          "name": "active-2-round",
+          "deviceSource": 8913153
+        },
+        {
+          "name": "active-2-round",
+          "deviceSource": 8913155
+        },
+        {
+          "name": "active-2-round",
+          "deviceSource": 8913159
+        },
+        {
+          "name": "active-2-round",
+          "deviceSource": 10092800
+        },
+        {
+          "name": "active-2-round",
+          "deviceSource": 10092801
+        },
+        {
+          "name": "active-2-round",
+          "deviceSource": 10092803
+        },
+        {
+          "name": "active-2-round",
+          "deviceSource": 10092807
+        }
       ],
       "designWidth": 466
     }
