@@ -172,7 +172,7 @@ class TrainingRepository(context: Context) {
 }
 
 private class TrainingDataStore(context: Context) :
-    SQLiteOpenHelper(context, "training_hub.db", null, 1) {
+    SQLiteOpenHelper(context, "training_hub.db", null, 2) {
 
     private val cacheDir = context.cacheDir
 
@@ -279,13 +279,8 @@ private class TrainingDataStore(context: Context) :
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS fit_superset")
-        db.execSQL("DROP TABLE IF EXISTS fit_exercise")
-        db.execSQL("DROP TABLE IF EXISTS performed_set")
-        db.execSQL("DROP TABLE IF EXISTS planned_set_group")
-        db.execSQL("DROP TABLE IF EXISTS planned_exercise")
-        db.execSQL("DROP TABLE IF EXISTS import_meta")
-        onCreate(db)
+        // v2 establishes a non-destructive migration policy. The schema is unchanged.
+        // Future versions must ALTER/add tables explicitly; imported history must never be dropped.
     }
 
     fun loadImportMeta(): Map<String, SourceImportSummary> {
