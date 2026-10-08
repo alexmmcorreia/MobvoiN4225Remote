@@ -4,6 +4,8 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.net.Uri
+import androidx.core.content.FileProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -188,6 +190,7 @@ class StrengthExecutionRepository(context: Context) {
 
     suspend fun attachVideo(set: WorkoutSetPlan, uri: String) = withContext(Dispatchers.IO) {
         val current = loadLocalSet(set.key)
+        val stableUri = materializeVideoUri(set.key, uri)
         val values = ContentValues().apply {
             put("set_key", set.key)
             put("source_exercise_id", set.sourceExerciseId)
@@ -197,7 +200,7 @@ class StrengthExecutionRepository(context: Context) {
             putNullable("reps", current?.reps)
             putNullable("rpe", current?.rpe)
             putNullable("comment", current?.comment)
-            put("video_uri", uri)
+            put("video_uri", stableUri)
             putNullable("heart_rate_bpm", current?.heartRateBpm)
             putNullable("peak_heart_rate_bpm", current?.peakHeartRateBpm)
             if (current?.completedAt != null) put("completed_at", current.completedAt)
@@ -210,6 +213,31 @@ class StrengthExecutionRepository(context: Context) {
             SQLiteDatabase.CONFLICT_REPLACE,
         )
         refreshSync(state.value.selectedDate, "Vídeo associado à série")
+    }
+
+    private fun materializeVideoUri(setKey: String, rawUri: String): String {
+        val uri = Uri.parse(rawUri)
+        if (uri.authority == "${appContext.packageName}.fileprovider") return rawUri
+
+        val input = appContext.contentResolver.openInputStream(uri)
+            ?: error("Não foi possível abrir o vídeo selecionado.")
+        val mime = appContext.contentResolver.getType(uri).orEmpty()
+        val extension = when {
+            "quicktime" in mime -> "mov"
+            "webm" in mime -> "webm"
+            else -> "mp4"
+        }
+        val safe = setKey.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        val dir = File(appContext.filesDir, "workout_videos").apply { mkdirs() }
+        val target = File(dir, "imported_${System.currentTimeMillis()}_$safe.$extension")
+        input.use { source ->
+            target.outputStream().use { sink -> source.copyTo(sink) }
+        }
+        return FileProvider.getUriForFile(
+            appContext,
+            "${appContext.packageName}.fileprovider",
+            target,
+        ).toString()
     }
 
     suspend fun acceptSuggestedMapping(msbName: String) = withContext(Dispatchers.IO) {
