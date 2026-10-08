@@ -156,6 +156,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         controller = TreadmillController(this)
+        TrainingHubRuntime.treadmillController = controller
         healthConnect = HealthConnectBridge(this)
         heartRateMonitor = HeartRateMonitor(this)
         strengthExecutionRepository = StrengthExecutionRepository(this)
