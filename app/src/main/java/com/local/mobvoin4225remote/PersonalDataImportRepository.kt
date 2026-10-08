@@ -14,6 +14,8 @@ import java.time.ZoneId
 
 data class PersonalImportState(
     val statuses: List<IntegrationImportStatus> = emptyList(),
+    val latestBody: BodyMeasurement? = null,
+    val latestNutrition: NutritionDay? = null,
     val busy: Boolean = false,
     val lastMessage: String? = null,
 )
@@ -131,7 +133,12 @@ class PersonalIntegrationRepository(context: Context) {
     }
 
     suspend fun refresh() = withContext(Dispatchers.IO) {
-        state.value = state.value.copy(statuses = store.integrationStatuses(), busy = false)
+        state.value = state.value.copy(
+            statuses = store.integrationStatuses(),
+            latestBody = store.latestBodyMeasurement(),
+            latestNutrition = store.latestNutritionDay(),
+            busy = false,
+        )
     }
 
     suspend fun importCanonical(input: InputStream) = withContext(Dispatchers.IO) {
@@ -188,12 +195,16 @@ class PersonalIntegrationRepository(context: Context) {
         state.value = if (result.isSuccess) {
             PersonalImportState(
                 statuses = store.integrationStatuses(),
+                latestBody = store.latestBodyMeasurement(),
+                latestNutrition = store.latestNutritionDay(),
                 busy = false,
                 lastMessage = result.getOrThrow(),
             )
         } else {
             PersonalImportState(
                 statuses = store.integrationStatuses(),
+                latestBody = store.latestBodyMeasurement(),
+                latestNutrition = store.latestNutritionDay(),
                 busy = false,
                 lastMessage = "Falha na importação: ${result.exceptionOrNull()?.message ?: "erro desconhecido"}",
             )
