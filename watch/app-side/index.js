@@ -85,6 +85,10 @@ AppSideService(
           res(null, await requestNative('/v1/watch/daily', 'POST', params))
           return
         }
+        if (method === 'HISTORY') {
+          res(null, await requestNative('/v1/watch/history', 'POST', params))
+          return
+        }
         if (method === 'PING') {
           if (!_fetch) throw new Error('network unavailable')
           const response = await _fetch({ url: BASE + '/v1/watch/ping', method: 'GET' })
