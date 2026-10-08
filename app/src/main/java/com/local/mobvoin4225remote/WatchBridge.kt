@@ -14,6 +14,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -219,6 +220,7 @@ class WatchBridgeService : Service() {
         )
         startForeground(WATCH_NOTIFICATION_ID, buildNotification())
         scope.launch { serve() }
+        scope.launch { monitorWatchPresence() }
     }
 
     override fun onDestroy() {
@@ -233,6 +235,17 @@ class WatchBridgeService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private suspend fun monitorWatchPresence() {
+        while (true) {
+            delay(5_000L)
+            val current = WatchBridgeRuntime.state.value
+            val last = current.lastSeenMs
+            if (current.paired && last != null && System.currentTimeMillis() - last > 15_000L) {
+                WatchBridgeRuntime.state.value = current.copy(paired = false)
+            }
+        }
+    }
 
     private fun buildNotification(): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
