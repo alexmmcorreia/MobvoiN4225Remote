@@ -31,6 +31,8 @@ data class WorkoutSetPlan(
     val completed: Boolean,
     val comment: String?,
     val videoUri: String?,
+    val heartRateBpm: Int? = null,
+    val peakHeartRateBpm: Int? = null,
 )
 
 data class WorkoutExercisePlan(
@@ -147,6 +149,9 @@ class StrengthExecutionRepository(context: Context) {
             putNullable("rpe", rpe)
             putNullable("comment", comment?.takeIf { it.isNotBlank() })
             putNullable("video_uri", existing?.videoUri)
+            val currentHr = WatchBridgeRuntime.state.value.lastHeartRateBpm
+            putNullable("heart_rate_bpm", currentHr)
+            putNullable("peak_heart_rate_bpm", currentHr)
             put("completed_at", System.currentTimeMillis())
             put("sync_state", if (set.sourceExerciseId.startsWith("free:")) "local_only" else "pending")
         }
@@ -318,7 +323,7 @@ class StrengthExecutionRepository(context: Context) {
             db.readableDatabase.rawQuery(
                 """
                 SELECT set_key,source_exercise_id,group_index,set_index,
-                       weight,reps,rpe,comment,video_uri,completed_at
+                       weight,reps,rpe,comment,video_uri,heart_rate_bpm,peak_heart_rate_bpm,completed_at
                 FROM local_set
                 WHERE completed_at IS NOT NULL AND sync_state='pending'
                 ORDER BY completed_at
@@ -349,7 +354,9 @@ class StrengthExecutionRepository(context: Context) {
                             putNullableJson("rpe", if (cursor.isNull(6)) null else cursor.getDouble(6))
                             putNullableJson("comment", if (cursor.isNull(7)) null else cursor.getString(7))
                             putNullableJson("videoUri", if (cursor.isNull(8)) null else cursor.getString(8))
-                            put("completedAt", cursor.getLong(9))
+                            putNullableJson("heartRateBpm", if (cursor.isNull(9)) null else cursor.getInt(9))
+                            putNullableJson("peakHeartRateBpm", if (cursor.isNull(10)) null else cursor.getInt(10))
+                            put("completedAt", cursor.getLong(11))
                             putNullableJson("date", date)
                             putNullableJson("exercise", exercise)
                         }
@@ -456,6 +463,8 @@ class StrengthExecutionRepository(context: Context) {
                             completed = local?.completedAt != null,
                             comment = local?.comment,
                             videoUri = local?.videoUri,
+                            heartRateBpm = local?.heartRateBpm,
+                            peakHeartRateBpm = local?.peakHeartRateBpm,
                         )
                     }
                 }
@@ -627,6 +636,8 @@ class StrengthExecutionRepository(context: Context) {
                             completed = local?.completedAt != null,
                             comment = local?.comment,
                             videoUri = local?.videoUri,
+                            heartRateBpm = local?.heartRateBpm,
+                            peakHeartRateBpm = local?.peakHeartRateBpm,
                         )
                     }
                 }
@@ -986,7 +997,7 @@ class StrengthExecutionRepository(context: Context) {
     private fun loadLocalSet(key: String): LocalSetRow? {
         db.readableDatabase.rawQuery(
             """
-            SELECT weight,reps,rpe,comment,video_uri,completed_at
+            SELECT weight,reps,rpe,comment,video_uri,heart_rate_bpm,peak_heart_rate_bpm,completed_at
             FROM local_set WHERE set_key=?
             """.trimIndent(),
             arrayOf(key),
@@ -998,7 +1009,9 @@ class StrengthExecutionRepository(context: Context) {
                 rpe = if (c.isNull(2)) null else c.getDouble(2),
                 comment = if (c.isNull(3)) null else c.getString(3),
                 videoUri = if (c.isNull(4)) null else c.getString(4),
-                completedAt = if (c.isNull(5)) null else c.getLong(5),
+                heartRateBpm = if (c.isNull(5)) null else c.getInt(5),
+                peakHeartRateBpm = if (c.isNull(6)) null else c.getInt(6),
+                completedAt = if (c.isNull(7)) null else c.getLong(7),
             )
         }
     }
@@ -1016,12 +1029,14 @@ class StrengthExecutionRepository(context: Context) {
         val rpe: Double?,
         val comment: String?,
         val videoUri: String?,
+        val heartRateBpm: Int?,
+        val peakHeartRateBpm: Int?,
         val completedAt: Long?,
     )
 }
 
 private class ExecutionDb(context: Context) :
-    SQLiteOpenHelper(context, "strength_execution.db", null, 2) {
+    SQLiteOpenHelper(context, "strength_execution.db", null, 3) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -1048,6 +1063,8 @@ private class ExecutionDb(context: Context) :
                 rpe REAL,
                 comment TEXT,
                 video_uri TEXT,
+                heart_rate_bpm INTEGER,
+                peak_heart_rate_bpm INTEGER,
                 completed_at INTEGER,
                 sync_state TEXT NOT NULL DEFAULT 'pending'
             )
@@ -1058,6 +1075,10 @@ private class ExecutionDb(context: Context) :
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createFreeTables(db)
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE local_set ADD COLUMN heart_rate_bpm INTEGER")
+            db.execSQL("ALTER TABLE local_set ADD COLUMN peak_heart_rate_bpm INTEGER")
+        }
     }
 
     private fun createFreeTables(db: SQLiteDatabase) {
