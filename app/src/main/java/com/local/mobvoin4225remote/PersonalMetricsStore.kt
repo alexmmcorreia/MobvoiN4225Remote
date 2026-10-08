@@ -196,11 +196,15 @@ class PersonalMetricsStore(context: Context) :
         timestampMs: Long = System.currentTimeMillis(),
         rawJson: String? = null,
     ) {
+        val metricDay = java.time.Instant.ofEpochMilli(timestampMs)
+            .atZone(java.time.ZoneId.systemDefault())
+            .toLocalDate()
+            .toString()
         val values = ContentValues().apply {
             put("source", source)
             put("metric", metric)
             put("timestamp_ms", timestampMs)
-            put("day", LocalDate.now().toString())
+            put("day", metricDay)
             if (value == null) putNull("value") else put("value", value)
             if (unit == null) putNull("unit") else put("unit", unit)
             if (rawJson == null) putNull("raw_json") else put("raw_json", rawJson)
