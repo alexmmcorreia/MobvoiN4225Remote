@@ -32,6 +32,7 @@ let pollTimer = null
 let tickTimer = null
 let vibrator = null
 let stateReceivedAt = 0
+let lastRestValue = 0
 
 const vm = {
   connected: false,
@@ -291,12 +292,22 @@ function render() {
   }
 
   text({
-    x: 50, y: 406, w: 366, h: 25,
+    x: 50, y: 400, w: 366, h: 24,
     text: (s.completedSets || 0) + '/' + (s.totalSets || 0) + ' séries · ' +
       ((s.exerciseIndex || 0) + 1) + '/' + (s.exerciseCount || 0) + ' exercícios',
-    text_size: 16,
+    text_size: 15,
     color: MUTED,
   })
+
+  if (s.nextExerciseName) {
+    text({
+      x: 50, y: 424, w: 366, h: 23,
+      text: 'A seguir: ' + s.nextExerciseName,
+      text_size: 14,
+      color: MUTED,
+      text_style: text_style.ELLIPSIS,
+    })
+  }
 }
 
 function renderCardio(cardio) {
@@ -373,6 +384,7 @@ function adoptState(data) {
   vm.connected = true
   vm.error = ''
   vm.workout = data
+  if (!vm.heartRate && data.watchHeartRateBpm) vm.heartRate = data.watchHeartRateBpm
   stateReceivedAt = Date.now()
   if (vm.draftRpe === null || Number(data.setIndex) !== Number(vm._lastSetIndex) ||
       data.exerciseName !== vm._lastExercise) {
@@ -516,7 +528,15 @@ Page(
       refreshState(true)
       pollTimer = setInterval(() => refreshState(false), 3000)
       tickTimer = setInterval(() => {
-        if (vm.connected && restRemaining() > 0) render()
+        if (!vm.connected) return
+        const currentRest = restRemaining()
+        if (lastRestValue > 0 && currentRest === 0) {
+          safeVibrate(VIBRATOR_SCENE_NOTIFICATION)
+          refreshState(false)
+        } else if (currentRest > 0) {
+          render()
+        }
+        lastRestValue = currentRest
       }, 1000)
     },
 
