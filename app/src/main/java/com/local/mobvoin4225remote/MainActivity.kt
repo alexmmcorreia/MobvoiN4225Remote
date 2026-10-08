@@ -1036,6 +1036,7 @@ private fun N4225Screen(
             )
             2 -> AnalyticsPage(
                 analytics = analytics,
+                personal = personalImports,
                 repository = strengthAnalyticsRepository,
             )
             4 -> WorkoutPage(state, watch, controller) { showStartConfirm = true }
@@ -1978,6 +1979,7 @@ private fun SessionCard(session: WorkoutSession, onDelete: () -> Unit, onExport:
 @Composable
 private fun AnalyticsPage(
     analytics: StrengthAnalyticsViewState,
+    personal: PersonalImportState,
     repository: StrengthAnalyticsRepository,
 ) {
     var query by remember { mutableStateOf("") }
@@ -2013,6 +2015,34 @@ private fun AnalyticsPage(
                     }
                     if (analytics.sourceNote.isNotBlank()) {
                         Text(analytics.sourceNote, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+
+        if (personal.latestBody != null || personal.latestNutrition != null) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("Corpo & nutrição", fontWeight = FontWeight.Bold)
+                        personal.latestBody?.let { body ->
+                            val bits = buildList {
+                                body.weightKg?.let { add("%.1f kg".format(Locale.US, it)) }
+                                body.bodyFatPercent?.let { add("%.1f%% gordura".format(Locale.US, it)) }
+                                body.muscleMassKg?.let { add("%.1f kg massa muscular".format(Locale.US, it)) }
+                            }
+                            if (bits.isNotEmpty()) Text(bits.joinToString(" · "))
+                            Text("Fonte: ${body.source}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        personal.latestNutrition?.let { nutrition ->
+                            val bits = buildList {
+                                nutrition.caloriesKcal?.let { add("%.0f kcal".format(Locale.US, it)) }
+                                nutrition.proteinG?.let { add("%.0f g proteína".format(Locale.US, it)) }
+                                nutrition.weightTrendKg?.let { add("tendência %.1f kg".format(Locale.US, it)) }
+                            }
+                            if (bits.isNotEmpty()) Text("${nutrition.date} · " + bits.joinToString(" · "))
+                            Text("Fonte: ${nutrition.source}", style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
             }
