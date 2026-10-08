@@ -156,6 +156,11 @@ function render() {
   }
 
   const s = vm.workout || {}
+  if (s.cardio && s.cardio.active) {
+    renderCardio(s.cardio)
+    return
+  }
+
   if (s.complete) {
     text({
       x: 60, y: 130, w: 346, h: 55,
@@ -283,6 +288,54 @@ function render() {
       ((s.exerciseIndex || 0) + 1) + '/' + (s.exerciseCount || 0) + ' exercícios',
     text_size: 16,
     color: MUTED,
+  })
+}
+
+function renderCardio(cardio) {
+  text({
+    x: 70, y: 105, w: 326, h: 42,
+    text: 'PASSADEIRA',
+    text_size: 22,
+    color: MUTED,
+  })
+
+  text({
+    x: 85, y: 150, w: 296, h: 70,
+    text: fmt(cardio.speedKmh) + ' km/h',
+    text_size: 44,
+    color: ACCENT,
+  })
+
+  text({
+    x: 60, y: 218, w: 346, h: 34,
+    text: 'Alvo ' + fmt(cardio.targetSpeedKmh) + ' · ' +
+      fmt(cardio.distanceKm) + ' km · ' + fmtTime(cardio.durationSec),
+    text_size: 18,
+    color: MUTED,
+  })
+
+  button({
+    x: 66, y: 276, w: 136, h: 58,
+    text: '− 0,5',
+    click_func: () => sendAction('TREADMILL_SPEED_DELTA', { delta: -0.5 }),
+  })
+  button({
+    x: 264, y: 276, w: 136, h: 58,
+    text: '+ 0,5',
+    click_func: () => sendAction('TREADMILL_SPEED_DELTA', { delta: 0.5 }),
+  })
+
+  button({
+    x: 62, y: 350, w: 160, h: 58,
+    text: cardio.paused ? 'Retomar' : 'Pausa',
+    click_func: () => sendAction(cardio.paused ? 'TREADMILL_RESUME' : 'TREADMILL_PAUSE'),
+  })
+  button({
+    x: 244, y: 350, w: 160, h: 58,
+    text: 'STOP',
+    normal_color: 0x6f1f1f,
+    press_color: 0x8a2b2b,
+    click_func: () => sendAction('TREADMILL_STOP', {}, true),
   })
 }
 
