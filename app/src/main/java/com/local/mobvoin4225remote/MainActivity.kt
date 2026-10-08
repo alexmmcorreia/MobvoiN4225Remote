@@ -159,7 +159,11 @@ class MainActivity : ComponentActivity() {
         healthConnect = HealthConnectBridge(this)
         heartRateMonitor = HeartRateMonitor(this)
         strengthExecutionRepository = StrengthExecutionRepository(this)
+        TrainingHubRuntime.strengthRepository = strengthExecutionRepository
         trainingRepository = TrainingRepository(this)
+        if (WatchBridgeRuntime.isEnabled(this)) {
+            WatchBridgeRuntime.start(this)
+        }
         setContent {
             MaterialTheme {
                 N4225Screen(controller, healthConnect, heartRateMonitor, trainingRepository, strengthExecutionRepository)
@@ -800,6 +804,7 @@ private fun N4225Screen(
     val watch by heartRateMonitor.state.collectAsState()
     val strength by trainingRepository.state.collectAsState()
     val execution by strengthExecutionRepository.state.collectAsState()
+    val watchBridge by WatchBridgeRuntime.state.collectAsState()
     val context = LocalContext.current
     var page by remember { mutableIntStateOf(0) }
     var showStartConfirm by remember { mutableStateOf(false) }
@@ -900,8 +905,8 @@ private fun N4225Screen(
         healthGranted = if (healthAvailable) healthConnect.hasPermissions() else false
     }
 
-    LaunchedEffect(watch.heartRateBpm) {
-        controller.updateExternalHeartRate(watch.heartRateBpm)
+    LaunchedEffect(watch.heartRateBpm, watchBridge.lastHeartRateBpm) {
+        controller.updateExternalHeartRate(watchBridge.lastHeartRateBpm ?: watch.heartRateBpm)
     }
 
     LaunchedEffect(page) {
@@ -922,8 +927,8 @@ private fun N4225Screen(
                 Text(
                     execution.workout?.let { workout ->
                         "Treino de força · ${workout.completedSets}/${workout.totalSets} séries"
-                    } ?: watch.heartRateBpm?.let { bpm ->
-                        "Relógio · $bpm bpm"
+                    } ?: (watchBridge.lastHeartRateBpm ?: watch.heartRateBpm)?.let { bpm ->
+                        "Active 2 · $bpm bpm"
                     } ?: "Treino, cardio e histórico",
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -949,6 +954,7 @@ private fun N4225Screen(
             0 -> TodayStrengthPage(
                 execution = execution,
                 watch = watch,
+                watchBridge = watchBridge,
                 repository = strengthExecutionRepository,
                 onFilmSet = { set ->
                     val uri = createWorkoutVideoUri(context, set.key)
@@ -979,6 +985,7 @@ private fun N4225Screen(
                 s = state,
                 watch = watch,
                 execution = execution,
+                watchBridge = watchBridge,
                 strengthRepository = strengthExecutionRepository,
                 c = controller,
                 heartRateMonitor = heartRateMonitor,
@@ -1146,6 +1153,7 @@ private fun SmallMetric(label: String, value: String, modifier: Modifier = Modif
 private fun TodayStrengthPage(
     execution: StrengthExecutionState,
     watch: HeartRateState,
+    watchBridge: WatchBridgeState,
     repository: StrengthExecutionRepository,
     onFilmSet: (WorkoutSetPlan) -> Unit,
     onChooseVideo: (WorkoutSetPlan) -> Unit,
@@ -1183,6 +1191,29 @@ private fun TodayStrengthPage(
                     TextButton(onClick = { scope.launch { repository.goToday() } }) { Text("Hoje") }
                 }
                 OutlinedButton(onClick = { scope.launch { repository.nextDay() } }) { Text("›") }
+            }
+        }
+
+        if (watchBridge.dailyContext != null || watchBridge.paired) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("Contexto do Active 2", fontWeight = FontWeight.Bold)
+                        val daily = watchBridge.dailyContext
+                        val bits = buildList {
+                            daily?.sleepMinutes?.let { add("Sono ${it / 60}h%02d".format(it % 60)) }
+                            daily?.sleepScore?.let { add("score $it") }
+                            daily?.restingHeartRate?.let { add("FC repouso $it") }
+                            daily?.steps?.let { add("$it passos") }
+                            daily?.stress?.let { add("stress $it") }
+                        }
+                        Text(
+                            if (bits.isEmpty()) "Ligado · à espera dos dados diários"
+                            else bits.joinToString(" · "),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
             }
         }
 
@@ -1288,7 +1319,10 @@ private fun TodayStrengthPage(
                         if (planBits.isNotEmpty()) {
                             Text(planBits.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
                         }
-                        Text("FC: ${watch.heartRateBpm?.let { "$it bpm" } ?: "—"}")
+                        Text(
+                            "FC: ${(watchBridge.lastHeartRateBpm ?: watch.heartRateBpm)?.let { "$it bpm" } ?: "—"}" +
+                                if (watchBridge.paired) " · Active 2" else ""
+                        )
                         execution.lastMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     }
                 }
@@ -1814,6 +1848,7 @@ private fun MorePage(
     s: AppState,
     watch: HeartRateState,
     execution: StrengthExecutionState,
+    watchBridge: WatchBridgeState,
     strengthRepository: StrengthExecutionRepository,
     c: TreadmillController,
     heartRateMonitor: HeartRateMonitor,
@@ -1825,6 +1860,58 @@ private fun MorePage(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Active 2 · integração profunda", fontWeight = FontWeight.Bold)
+                    Text(
+                        when {
+                            watchBridge.paired -> "Ligado à Mini App Zepp"
+                            watchBridge.running -> "Bridge ativo · à espera do relógio"
+                            else -> "Bridge parado"
+                        }
+                    )
+                    Text(
+                        "Código de emparelhamento: ${WatchBridgeRuntime.pairingCode(context)}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    watchBridge.lastHeartRateBpm?.let { Text("FC do relógio: $it bpm") }
+                    watchBridge.dailyContext?.let { daily ->
+                        Text(
+                            buildList {
+                                daily.sleepScore?.let { add("Sono $it") }
+                                daily.restingHeartRate?.let { add("FC repouso $it") }
+                                daily.steps?.let { add("$it passos") }
+                                daily.stress?.let { add("stress $it") }
+                                daily.spo2Percent?.let { add("SpO₂ $it%") }
+                                daily.skinTemperatureC?.let { add("%.1f°C pele".format(Locale.US, it)) }
+                            }.joinToString(" · ").ifBlank { "Dados diários recebidos" },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    watchBridge.lastError?.let {
+                        Text("Erro: $it", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (watchBridge.running) {
+                            OutlinedButton(onClick = { WatchBridgeRuntime.stop(context) }) {
+                                Text("Parar bridge")
+                            }
+                        } else {
+                            Button(onClick = { WatchBridgeRuntime.start(context) }) {
+                                Text("Ativar bridge")
+                            }
+                        }
+                    }
+                    Text(
+                        "O código é introduzido uma vez nas definições da Mini App Training Hub dentro da app Zepp.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -1853,7 +1940,7 @@ private fun MorePage(
         item {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text("Relógio / frequência cardíaca", fontWeight = FontWeight.Bold)
+                    Text("FC Bluetooth standard · fallback", fontWeight = FontWeight.Bold)
                     Text("Estado: ${watch.status}")
                     Text("Dispositivo: ${watch.connectedName ?: watch.candidateName ?: "—"}")
                     Text("FC: ${watch.heartRateBpm?.let { "$it bpm" } ?: "—"}")
