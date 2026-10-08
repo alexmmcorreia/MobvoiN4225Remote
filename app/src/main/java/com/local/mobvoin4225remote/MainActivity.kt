@@ -1076,7 +1076,11 @@ private fun N4225Screen(
             text = {
                 Text(
                     "Backup com ${pendingInspection.rowCount} registos em ${pendingInspection.tableCount} tabelas" +
-                        if (pendingInspection.videoFiles > 0) " e ${pendingInspection.videoFiles} vídeos. " else ". " +
+                        (if (pendingInspection.videoFiles > 0) {
+                            " e ${pendingInspection.videoFiles} vídeos. "
+                        } else {
+                            ". "
+                        }) +
                         "Antes de restaurar, a app tenta criar automaticamente um backup de segurança do estado atual."
                 )
             },
@@ -1102,8 +1106,11 @@ private fun N4225Screen(
                             restoreMessage = result.fold(
                                 onSuccess = {
                                     "Restauro concluído: ${it.restoredRows} registos · ${it.restoredVideos} vídeos" +
-                                        if (it.safetyBackup != null) " · backup de segurança criado." else
+                                        (if (it.safetyBackup != null) {
+                                            " · backup de segurança criado."
+                                        } else {
                                             " · não foi possível criar snapshot prévio."
+                                        })
                                 },
                                 onFailure = {
                                     "Falha no restauro: ${it.message ?: "erro desconhecido"}"
