@@ -305,7 +305,7 @@ function render() {
       text: 'A seguir: ' + s.nextExerciseName,
       text_size: 14,
       color: MUTED,
-      text_style: text_style.ELLIPSIS,
+      text_style: text_style.NONE,
     })
   }
 }
