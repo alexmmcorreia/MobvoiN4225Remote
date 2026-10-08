@@ -61,10 +61,19 @@ data class WeeklyStrengthPoint(
     val trainingDays: Int,
 )
 
+data class StrengthPrEvent(
+    val date: String,
+    val exercise: String,
+    val e1rmKg: Double,
+    val previousE1rmKg: Double,
+    val deltaKg: Double,
+)
+
 data class StrengthAnalyticsViewState(
     val overview: StrengthOverview = StrengthOverview(),
     val exercises: List<ExerciseAnalyticsSummary> = emptyList(),
     val weekly: List<WeeklyStrengthPoint> = emptyList(),
+    val recentPrs: List<StrengthPrEvent> = emptyList(),
     val selectedExercise: String? = null,
     val selectedSummary: ExerciseAnalyticsSummary? = null,
     val selectedTrend: List<ExerciseTrendPoint> = emptyList(),
@@ -159,6 +168,7 @@ class StrengthAnalyticsRepository(context: Context) {
             overview = overview,
             exercises = summaries,
             weekly = buildWeekly(sets),
+            recentPrs = buildRecentPrs(sets),
             sourceNote = "Histórico: FitNotes é a fonte principal; séries locais do Training Hub substituem o mesmo exercício/dia quando existirem. MSB é usado para plano, não é contado outra vez como execução histórica.",
             busy = false,
         )
@@ -346,6 +356,27 @@ class StrengthAnalyticsRepository(context: Context) {
                 averageRpe = if (rpes.isEmpty()) null else rpes.average(),
             )
         }
+
+    private fun buildRecentPrs(sets: List<CanonicalSet>): List<StrengthPrEvent> {
+        val events = mutableListOf<StrengthPrEvent>()
+        sets.groupBy { it.exercise }.forEach { (exercise, exerciseSets) ->
+            var best = 0.0
+            exerciseSets.groupBy { it.date }.toSortedMap().forEach { (date, daySets) ->
+                val dayBest = daySets.mapNotNull { it.e1rm }.maxOrNull() ?: return@forEach
+                if (best > 0.0 && dayBest > best + 0.1) {
+                    events += StrengthPrEvent(
+                        date = date,
+                        exercise = exercise,
+                        e1rmKg = dayBest,
+                        previousE1rmKg = best,
+                        deltaKg = dayBest - best,
+                    )
+                }
+                if (dayBest > best) best = dayBest
+            }
+        }
+        return events.sortedByDescending { it.date }.take(20)
+    }
 
     private fun buildWeekly(sets: List<CanonicalSet>): List<WeeklyStrengthPoint> {
         val weekFields = WeekFields.ISO
