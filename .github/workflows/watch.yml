@@ -34,7 +34,7 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: Build Active 2 ZAB
-        run: npx zeus build
+        run: npm run build
 
       - name: Upload Active 2 package
         uses: actions/upload-artifact@v4
