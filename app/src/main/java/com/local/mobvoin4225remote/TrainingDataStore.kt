@@ -57,7 +57,10 @@ class TrainingRepository(context: Context) {
 
     suspend fun importMsb(input: InputStream) = withContext(Dispatchers.IO) {
         state.value = state.value.copy(busy = true, lastMessage = "A importar MyStrengthBook…")
-        val result = runCatching { store.importMsb(input) }
+        val result = runCatching {
+            TrainingHubBackup.safetySnapshot(appContext, "before_msb_import")
+            store.importMsb(input)
+        }
         state.value = if (result.isSuccess) {
             loadState().copy(lastMessage = result.getOrThrow())
         } else {
@@ -67,7 +70,10 @@ class TrainingRepository(context: Context) {
 
     suspend fun importFitNotes(input: InputStream, displayName: String?) = withContext(Dispatchers.IO) {
         state.value = state.value.copy(busy = true, lastMessage = "A importar FitNotes…")
-        val result = runCatching { store.importFitNotes(input, displayName) }
+        val result = runCatching {
+            TrainingHubBackup.safetySnapshot(appContext, "before_fitnotes_import")
+            store.importFitNotes(input, displayName)
+        }
         state.value = if (result.isSuccess) {
             loadState().copy(lastMessage = result.getOrThrow())
         } else {
