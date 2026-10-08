@@ -43,6 +43,9 @@ data class WatchBridgeState(
 object TrainingHubRuntime {
     @Volatile
     var strengthRepository: StrengthExecutionRepository? = null
+
+    @Volatile
+    var treadmillController: TreadmillController? = null
 }
 
 object WatchBridgeRuntime {
@@ -318,6 +321,18 @@ class WatchBridgeService : Service() {
             }
             "EXTEND_REST" -> repository.extendRest(payload.optInt("seconds", 30).coerceIn(5, 600))
             "SKIP_REST" -> repository.clearRest()
+            "TREADMILL_SPEED_DELTA" -> {
+                val delta = payload.optDouble("delta", 0.0).coerceIn(-2.0, 2.0)
+                TrainingHubRuntime.treadmillController?.changeSpeed(delta)
+            }
+            "TREADMILL_PAUSE" -> TrainingHubRuntime.treadmillController?.pause()
+            "TREADMILL_RESUME" -> {
+                val live = TrainingHubRuntime.treadmillController?.state?.value?.liveSession
+                if (live?.active == true && live.paused) {
+                    TrainingHubRuntime.treadmillController?.start()
+                }
+            }
+            "TREADMILL_STOP" -> TrainingHubRuntime.treadmillController?.stop()
         }
         return buildWorkoutState(repository)
     }
@@ -338,8 +353,22 @@ class WatchBridgeService : Service() {
             ((it - now + 999L) / 1000L).toInt().coerceAtLeast(0)
         } ?: 0
 
+        val treadmill = TrainingHubRuntime.treadmillController?.state?.value
+
         return JSONObject().apply {
             put("ok", true)
+            put(
+                "cardio",
+                JSONObject().apply {
+                    put("connected", treadmill?.controlReady == true)
+                    put("active", treadmill?.liveSession?.active == true)
+                    put("paused", treadmill?.liveSession?.paused == true)
+                    putNullable("speedKmh", treadmill?.telemetry?.speedKmh)
+                    putNullable("targetSpeedKmh", treadmill?.targetSpeed)
+                    putNullable("distanceKm", treadmill?.liveSession?.distanceKm)
+                    put("durationSec", treadmill?.liveSession?.durationSec ?: 0)
+                }
+            )
             put("date", s.selectedDate)
             put("busy", s.busy)
             put("complete", workout?.complete == true)
