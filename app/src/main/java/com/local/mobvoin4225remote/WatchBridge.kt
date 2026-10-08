@@ -348,6 +348,9 @@ class WatchBridgeService : Service() {
         val setIndex = if (currentSet == null || currentExercise == null) -1 else {
             currentExercise.sets.indexOfFirst { it.key == currentSet.key }
         }
+        val nextExercise = if (workout != null && exerciseIndex >= 0) {
+            workout.exercises.drop(exerciseIndex + 1).firstOrNull { ex -> ex.sets.any { !it.completed } }
+        } else null
         val now = System.currentTimeMillis()
         val restRemaining = s.restEndMs?.let {
             ((it - now + 999L) / 1000L).toInt().coerceAtLeast(0)
@@ -380,6 +383,7 @@ class WatchBridgeService : Service() {
             put("exerciseIndex", exerciseIndex)
             put("exerciseCount", workout?.exercises?.size ?: 0)
             putNullable("exerciseName", currentExercise?.name)
+            putNullable("nextExerciseName", nextExercise?.name)
             put("setIndex", setIndex)
             put("setCount", currentExercise?.sets?.size ?: 0)
             putNullable("load", currentSet?.actualLoad ?: currentSet?.prescribedLoad)
@@ -389,6 +393,7 @@ class WatchBridgeService : Service() {
             putNullable("lastPerformance", currentExercise?.lastPerformance)
             putNullable("bestRecentE1rm", currentExercise?.bestRecentE1rm)
             put("pendingSyncSets", s.analytics.pendingSyncSets)
+            putNullable("watchHeartRateBpm", WatchBridgeRuntime.state.value.lastHeartRateBpm)
         }
     }
 
