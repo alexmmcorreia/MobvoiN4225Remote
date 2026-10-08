@@ -440,6 +440,57 @@ class PersonalMetricsStore(context: Context) :
     }
 
     @Synchronized
+    fun latestBodyMeasurement(): BodyMeasurement? {
+        readableDatabase.rawQuery(
+            """
+            SELECT source,timestamp_ms,weight_kg,body_fat_percent,muscle_mass_kg,visceral_fat_index
+            FROM body_measurement
+            ORDER BY timestamp_ms DESC
+            LIMIT 1
+            """.trimIndent(),
+            null,
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            return BodyMeasurement(
+                source = cursor.getString(0),
+                timestampMs = cursor.getLong(1),
+                weightKg = if (cursor.isNull(2)) null else cursor.getDouble(2),
+                bodyFatPercent = if (cursor.isNull(3)) null else cursor.getDouble(3),
+                muscleMassKg = if (cursor.isNull(4)) null else cursor.getDouble(4),
+                visceralFatIndex = if (cursor.isNull(5)) null else cursor.getDouble(5),
+            )
+        }
+    }
+
+    @Synchronized
+    fun latestNutritionDay(): NutritionDay? {
+        readableDatabase.rawQuery(
+            """
+            SELECT source,day,calories_kcal,protein_g,carbs_g,fat_g,fiber_g,
+                   expenditure_kcal,target_kcal,weight_trend_kg
+            FROM nutrition_day
+            ORDER BY day DESC
+            LIMIT 1
+            """.trimIndent(),
+            null,
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            return NutritionDay(
+                source = cursor.getString(0),
+                date = cursor.getString(1),
+                caloriesKcal = if (cursor.isNull(2)) null else cursor.getDouble(2),
+                proteinG = if (cursor.isNull(3)) null else cursor.getDouble(3),
+                carbsG = if (cursor.isNull(4)) null else cursor.getDouble(4),
+                fatG = if (cursor.isNull(5)) null else cursor.getDouble(5),
+                fiberG = if (cursor.isNull(6)) null else cursor.getDouble(6),
+                expenditureKcal = if (cursor.isNull(7)) null else cursor.getDouble(7),
+                targetKcal = if (cursor.isNull(8)) null else cursor.getDouble(8),
+                weightTrendKg = if (cursor.isNull(9)) null else cursor.getDouble(9),
+            )
+        }
+    }
+
+    @Synchronized
     fun integrationStatuses(): List<IntegrationImportStatus> {
         val out = mutableListOf<IntegrationImportStatus>()
         readableDatabase.rawQuery(
