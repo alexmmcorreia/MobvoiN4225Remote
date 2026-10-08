@@ -39,6 +39,7 @@ data class WatchBridgeState(
     val lastSeenMs: Long? = null,
     val lastHeartRateBpm: Int? = null,
     val dailyContext: DailyBodyContext? = null,
+    val lastHistorySamples: Int = 0,
     val demoMode: Boolean = false,
     val lastError: String? = null,
 )
@@ -423,6 +424,23 @@ class WatchBridgeService : Service() {
                         paired = true,
                     )
                     respond(client, 200, JSONObject().put("ok", true))
+                }
+
+                method == "POST" && path == "/v1/watch/history" -> {
+                    val count = metrics.saveWatchHistory(payload)
+                    WatchBridgeRuntime.state.value = WatchBridgeRuntime.state.value.copy(
+                        lastHistorySamples = count,
+                        lastSeenMs = now,
+                        paired = true,
+                    )
+                    respond(
+                        client,
+                        200,
+                        JSONObject().apply {
+                            put("ok", true)
+                            put("stored", count)
+                        },
+                    )
                 }
 
                 else -> respond(client, 404, jsonError("Endpoint desconhecido"))
