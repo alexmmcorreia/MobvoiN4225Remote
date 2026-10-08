@@ -1903,11 +1903,47 @@ private fun MorePage(
                                 Text("Ativar bridge")
                             }
                         }
+                        OutlinedButton(
+                            onClick = {
+                                WatchBridgeRuntime.setDemoMode(context, !watchBridge.demoMode)
+                            }
+                        ) {
+                            Text(if (watchBridge.demoMode) "Sair do demo" else "Modo demo")
+                        }
+                    }
+                    if (watchBridge.demoMode) {
+                        Text(
+                            "DEMO ativo: o relógio recebe um treino fictício e as ações não alteram o teu histórico.",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                        )
                     }
                     Text(
                         "O código é introduzido uma vez nas definições da Mini App Training Hub dentro da app Zepp.",
                         style = MaterialTheme.typography.bodySmall,
                     )
+                }
+            }
+        }
+
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("Backup Training Hub", fontWeight = FontWeight.Bold)
+                    Text(
+                        "Exporta treino, mappings, histórico importado, métricas do relógio e cardio. Códigos de emparelhamento e endereços BLE ficam de fora.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Button(
+                        onClick = {
+                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                val file = TrainingHubBackup.export(context)
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                    shareBackupFile(context, file)
+                                }
+                            }
+                        }
+                    ) { Text("Exportar backup completo") }
                 }
             }
         }
@@ -2234,6 +2270,21 @@ private fun shareJsonFile(context: Context, file: File) {
     }
     context.startActivity(Intent.createChooser(intent, "Partilhar payload MSB"))
 }
+
+private fun shareBackupFile(context: Context, file: File) {
+    val uri = FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        file,
+    )
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "application/zip"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(intent, "Partilhar backup Training Hub"))
+}
+
 
 private fun queryDisplayName(context: Context, uri: android.net.Uri): String? {
     return runCatching {
