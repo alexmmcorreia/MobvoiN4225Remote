@@ -1075,8 +1075,9 @@ private fun N4225Screen(
             title = { Text("Restaurar backup?") },
             text = {
                 Text(
-                    "Backup com ${pendingInspection.rowCount} registos em ${pendingInspection.tableCount} tabelas. " +
-                        "Antes de restaurar, a app cria automaticamente um backup de segurança do estado atual."
+                    "Backup com ${pendingInspection.rowCount} registos em ${pendingInspection.tableCount} tabelas" +
+                        if (pendingInspection.videoFiles > 0) " e ${pendingInspection.videoFiles} vídeos. " else ". " +
+                        "Antes de restaurar, a app tenta criar automaticamente um backup de segurança do estado atual."
                 )
             },
             confirmButton = {
@@ -1100,7 +1101,9 @@ private fun N4225Screen(
                         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                             restoreMessage = result.fold(
                                 onSuccess = {
-                                    "Restauro concluído: ${it.restoredRows} registos · backup de segurança criado."
+                                    "Restauro concluído: ${it.restoredRows} registos · ${it.restoredVideos} vídeos" +
+                                        if (it.safetyBackup != null) " · backup de segurança criado." else
+                                            " · não foi possível criar snapshot prévio."
                                 },
                                 onFailure = {
                                     "Falha no restauro: ${it.message ?: "erro desconhecido"}"
@@ -2017,6 +2020,26 @@ private fun AnalyticsPage(
                             Text(
                                 "${week.week} · ${week.trainingDays} dias · ${week.sets} séries · " +
                                     "%.0f kg".format(Locale.US, week.tonnageKg),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (analytics.recentPrs.isNotEmpty()) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("PRs estimados recentes", fontWeight = FontWeight.Bold)
+                        analytics.recentPrs.take(8).forEach { pr ->
+                            Text(
+                                "${pr.date} · ${pr.exercise}: %.1f kg (%+.1f)".format(
+                                    Locale.US,
+                                    pr.e1rmKg,
+                                    pr.deltaKg,
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
