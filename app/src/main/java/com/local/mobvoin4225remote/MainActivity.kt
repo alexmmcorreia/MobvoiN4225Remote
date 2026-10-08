@@ -883,9 +883,8 @@ private fun N4225Screen(
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
-        if (controller.hasPermissions()) {
-            controller.autoConnect()
-            if (watch.savedAddress != null) heartRateMonitor.autoConnect()
+        if (controller.hasPermissions() && watch.savedAddress != null) {
+            heartRateMonitor.autoConnect()
         }
     }
 
