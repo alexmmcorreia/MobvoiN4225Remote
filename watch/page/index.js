@@ -128,7 +128,9 @@ function render() {
 
   text({
     x: 30, y: 62, w: 280, h: 30,
-    text: vm.connected ? 'Active 2 ligado' : (vm.error ? 'Sem ligação' : 'A ligar…'),
+    text: vm.connected
+      ? (vm.workout?.demoMode ? 'Ligado · DEMO' : 'Active 2 ligado')
+      : (vm.error ? 'Sem ligação' : 'A ligar…'),
     text_size: 18,
     color: vm.connected ? SUCCESS : MUTED,
     align_h: align.LEFT,
@@ -184,7 +186,12 @@ function render() {
     })
     renderDaily(275)
     button({
-      x: 148, y: 380, w: 170, h: 55,
+      x: 60, y: 380, w: 160, h: 55,
+      text: 'Desfazer',
+      click_func: () => sendAction('UNDO_LAST_SET', {}, true),
+    })
+    button({
+      x: 246, y: 380, w: 160, h: 55,
       text: 'Atualizar',
       click_func: () => refreshState(true),
     })
@@ -246,14 +253,20 @@ function render() {
       color: MUTED,
     })
     button({
-      x: 72, y: 334, w: 145, h: 58,
+      x: 39, y: 334, w: 118, h: 54,
       text: '+30s',
       click_func: () => sendAction('EXTEND_REST', { seconds: 30 }),
     })
     button({
-      x: 249, y: 334, w: 145, h: 58,
+      x: 174, y: 334, w: 118, h: 54,
       text: 'Saltar',
       click_func: () => sendAction('SKIP_REST'),
+    })
+    button({
+      x: 309, y: 334, w: 118, h: 54,
+      text: 'Desfazer',
+      text_size: 17,
+      click_func: () => sendAction('UNDO_LAST_SET', {}, true),
     })
   } else {
     button({
@@ -378,6 +391,12 @@ function adoptState(data) {
   if (!data || data.ok === false) {
     vm.connected = false
     vm.error = data?.error || 'Training Hub indisponível'
+    render()
+    return
+  }
+  if (data.protocolVersion !== undefined && Number(data.protocolVersion) !== 2) {
+    vm.connected = false
+    vm.error = 'Versões incompatíveis com o Training Hub'
     render()
     return
   }
