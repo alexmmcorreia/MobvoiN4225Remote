@@ -71,6 +71,14 @@ function restRemaining() {
   return Math.max(0, base - elapsed)
 }
 
+function localDateKey() {
+  const now = new Date()
+  const y = now.getFullYear()
+  const m = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  return y + '-' + m + '-' + d
+}
+
 function fmtTime(seconds) {
   const sec = Math.max(0, Number(seconds) || 0)
   const m = Math.floor(sec / 60)
@@ -416,7 +424,7 @@ function sendTelemetry(bpm) {
 
 function collectDailyContext() {
   const daily = {
-    date: new Date().toISOString().slice(0, 10),
+    date: localDateKey(),
     restingHeartRate: null,
     sleepScore: null,
     sleepMinutes: null,
