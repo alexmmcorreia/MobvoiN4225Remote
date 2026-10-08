@@ -5,8 +5,8 @@
     "appName": "Training Hub",
     "appType": "app",
     "version": {
-      "code": 4,
-      "name": "0.2.2"
+      "code": 5,
+      "name": "0.2.3"
     },
     "icon": "icon.png",
     "vender": "Training Hub",
