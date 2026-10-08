@@ -152,6 +152,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var heartRateMonitor: HeartRateMonitor
     private lateinit var trainingRepository: TrainingRepository
     private lateinit var strengthExecutionRepository: StrengthExecutionRepository
+    private lateinit var strengthAnalyticsRepository: StrengthAnalyticsRepository
+    private lateinit var personalIntegrationRepository: PersonalIntegrationRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -162,12 +164,22 @@ class MainActivity : ComponentActivity() {
         strengthExecutionRepository = StrengthExecutionRepository(this)
         TrainingHubRuntime.strengthRepository = strengthExecutionRepository
         trainingRepository = TrainingRepository(this)
+        strengthAnalyticsRepository = StrengthAnalyticsRepository(this)
+        personalIntegrationRepository = PersonalIntegrationRepository(this)
         if (WatchBridgeRuntime.isEnabled(this)) {
             WatchBridgeRuntime.start(this)
         }
         setContent {
             MaterialTheme {
-                N4225Screen(controller, healthConnect, heartRateMonitor, trainingRepository, strengthExecutionRepository)
+                N4225Screen(
+                    controller,
+                    healthConnect,
+                    heartRateMonitor,
+                    trainingRepository,
+                    strengthExecutionRepository,
+                    strengthAnalyticsRepository,
+                    personalIntegrationRepository,
+                )
             }
         }
     }
@@ -800,11 +812,15 @@ private fun N4225Screen(
     heartRateMonitor: HeartRateMonitor,
     trainingRepository: TrainingRepository,
     strengthExecutionRepository: StrengthExecutionRepository,
+    strengthAnalyticsRepository: StrengthAnalyticsRepository,
+    personalIntegrationRepository: PersonalIntegrationRepository,
 ) {
     val state by controller.state.collectAsState()
     val watch by heartRateMonitor.state.collectAsState()
     val strength by trainingRepository.state.collectAsState()
     val execution by strengthExecutionRepository.state.collectAsState()
+    val analytics by strengthAnalyticsRepository.state.collectAsState()
+    val personalImports by personalIntegrationRepository.state.collectAsState()
     val watchBridge by WatchBridgeRuntime.state.collectAsState()
     val context = LocalContext.current
     var page by remember { mutableIntStateOf(0) }
@@ -812,6 +828,9 @@ private fun N4225Screen(
     var healthAvailable by remember { mutableStateOf(false) }
     var healthGranted by remember { mutableStateOf(false) }
     var healthMessage by remember { mutableStateOf<String?>(null) }
+    var restoreUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var restoreInspection by remember { mutableStateOf<BackupInspection?>(null) }
+    var restoreMessage by remember { mutableStateOf<String?>(null) }
 
     val importScope = rememberCoroutineScope()
 
@@ -839,6 +858,39 @@ private fun N4225Screen(
                 importScope.launch {
                     stream.use { trainingRepository.importFitNotes(it, name) }
                     strengthExecutionRepository.refresh()
+                }
+            }
+        }
+    }
+
+    val personalDataImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            context.contentResolver.openInputStream(uri)?.let { stream ->
+                importScope.launch {
+                    stream.use { personalIntegrationRepository.importCanonical(it) }
+                }
+            }
+        }
+    }
+
+    val backupRestoreLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            context.contentResolver.openInputStream(uri)?.let { stream ->
+                importScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    val result = runCatching { stream.use { TrainingHubBackup.inspect(it) } }
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        result.onSuccess {
+                            restoreUri = uri
+                            restoreInspection = it
+                            restoreMessage = null
+                        }.onFailure {
+                            restoreMessage = "Backup inválido: ${it.message ?: "erro desconhecido"}"
+                        }
+                    }
                 }
             }
         }
@@ -911,6 +963,8 @@ private fun N4225Screen(
 
     LaunchedEffect(page) {
         if (page == 1) trainingRepository.refresh()
+        if (page == 2) strengthAnalyticsRepository.refresh()
+        if (page == 3) personalIntegrationRepository.refresh()
     }
 
     Column(
@@ -933,7 +987,7 @@ private fun N4225Screen(
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
-            if (page == 2 && !state.controlReady) {
+            if (page == 4 && !state.controlReady) {
                 OutlinedButton(onClick = {
                     if (controller.hasPermissions()) controller.autoConnect()
                     else permissionLauncher.launch(controller.requiredPermissions())
@@ -946,7 +1000,7 @@ private fun N4225Screen(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             NavButton("Hoje", page == 0, Modifier.weight(1f)) { page = 0 }
             NavButton("Calendário", page == 1, Modifier.weight(1f)) { page = 1 }
-            NavButton("Cardio", page == 2, Modifier.weight(1f)) { page = 2 }
+            NavButton("Progresso", page == 2, Modifier.weight(1f)) { page = 2 }
             NavButton("Mais", page == 3, Modifier.weight(1f)) { page = 3 }
         }
 
@@ -980,12 +1034,17 @@ private fun N4225Screen(
                 importMsb = { msbImportLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                 importFitNotes = { fitNotesImportLauncher.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
             )
-            2 -> WorkoutPage(state, watch, controller) { showStartConfirm = true }
+            2 -> AnalyticsPage(
+                analytics = analytics,
+                repository = strengthAnalyticsRepository,
+            )
+            4 -> WorkoutPage(state, watch, controller) { showStartConfirm = true }
             else -> MorePage(
                 s = state,
                 watch = watch,
                 execution = execution,
                 watchBridge = watchBridge,
+                personalImports = personalImports,
                 strengthRepository = strengthExecutionRepository,
                 c = controller,
                 heartRateMonitor = heartRateMonitor,
@@ -993,8 +1052,71 @@ private fun N4225Screen(
                 healthGranted = healthGranted,
                 requestHealthPermissions = { healthPermissionLauncher.launch(healthConnect.permissions) },
                 healthMessage = healthMessage,
+                restoreMessage = restoreMessage,
+                importPersonalData = {
+                    personalDataImportLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                },
+                restoreBackup = {
+                    backupRestoreLauncher.launch(arrayOf("application/zip", "application/octet-stream", "*/*"))
+                },
+                openCardio = { page = 4 },
             )
         }
+    }
+
+    val pendingInspection = restoreInspection
+    val pendingRestoreUri = restoreUri
+    if (pendingInspection != null && pendingRestoreUri != null) {
+        AlertDialog(
+            onDismissRequest = {
+                restoreInspection = null
+                restoreUri = null
+            },
+            title = { Text("Restaurar backup?") },
+            text = {
+                Text(
+                    "Backup com ${pendingInspection.rowCount} registos em ${pendingInspection.tableCount} tabelas. " +
+                        "Antes de restaurar, a app cria automaticamente um backup de segurança do estado atual."
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val uri = pendingRestoreUri
+                    restoreInspection = null
+                    restoreUri = null
+                    importScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        WatchBridgeRuntime.stop(context)
+                        val result = runCatching {
+                            context.contentResolver.openInputStream(uri)?.use {
+                                TrainingHubBackup.restore(context, it)
+                            } ?: error("Não foi possível abrir o backup.")
+                        }
+                        result.onSuccess {
+                            trainingRepository.refresh()
+                            strengthExecutionRepository.refresh()
+                            strengthAnalyticsRepository.refresh()
+                            personalIntegrationRepository.refresh()
+                        }
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            restoreMessage = result.fold(
+                                onSuccess = {
+                                    "Restauro concluído: ${it.restoredRows} registos · backup de segurança criado."
+                                },
+                                onFailure = {
+                                    "Falha no restauro: ${it.message ?: "erro desconhecido"}"
+                                },
+                            )
+                        }
+                    }
+                }) { Text("Restaurar") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    restoreInspection = null
+                    restoreUri = null
+                }) { Text("Cancelar") }
+            },
+        )
     }
 
     if (showStartConfirm) {
