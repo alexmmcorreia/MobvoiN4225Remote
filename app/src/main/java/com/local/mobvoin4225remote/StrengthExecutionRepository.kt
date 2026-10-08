@@ -1136,7 +1136,7 @@ private class ExecutionDb(context: Context) :
     }
 }
 
-private fun normalizeExerciseName(input: String): String {
+internal fun normalizeExerciseName(input: String): String {
     var s = input.lowercase(Locale.ROOT)
         .replace("&", " and ")
         .replace(Regex("[^a-z0-9]+"), " ")
@@ -1162,7 +1162,7 @@ private fun normalizeExerciseName(input: String): String {
         .joinToString(" ")
 }
 
-private fun nameSimilarity(a: String, b: String): Double {
+internal fun nameSimilarity(a: String, b: String): Double {
     if (a == b) return 1.0
     val ta = a.split(" ").filter { it.isNotBlank() }.toSet()
     val tb = b.split(" ").filter { it.isNotBlank() }.toSet()
@@ -1181,7 +1181,7 @@ private fun nameSimilarity(a: String, b: String): Double {
     return jaccard
 }
 
-private fun dateOverlap(a: Set<String>, b: Set<String>): Double {
+internal fun dateOverlap(a: Set<String>, b: Set<String>): Double {
     if (a.isEmpty() || b.isEmpty()) return 0.0
     val intersection = a.intersect(b).size.toDouble()
     val minSize = minOf(a.size, b.size).toDouble()
