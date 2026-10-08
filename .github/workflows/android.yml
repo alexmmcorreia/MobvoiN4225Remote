@@ -47,6 +47,9 @@ jobs:
               -validity 10000
           fi
 
+      - name: Run JVM unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
 
